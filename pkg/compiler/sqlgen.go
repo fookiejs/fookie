@@ -276,8 +276,14 @@ func (sg *SQLGenerator) CompileSoftDelete(model *ast.Model) string {
 func (sg *SQLGenerator) compileExpr(expr ast.Expression) string {
 	switch e := expr.(type) {
 	case *ast.BinaryOp:
+		op := e.Op
+		if op == "==" {
+			op = "="
+		} else if op == "!=" {
+			op = "<>"
+		}
 		return fmt.Sprintf("(%s %s %s)",
-			sg.compileExpr(e.Left), e.Op, sg.compileExpr(e.Right))
+			sg.compileExpr(e.Left), op, sg.compileExpr(e.Right))
 
 	case *ast.FieldAccess:
 		if len(e.Fields) == 0 {

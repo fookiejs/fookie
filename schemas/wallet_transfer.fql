@@ -128,7 +128,6 @@ model Transaction {
       toWalletId = input.toWalletId
       amount = input.amount
       currency = input.currency
-      status = "pending"
       riskScore = 0
     }
 
@@ -149,7 +148,7 @@ model Transaction {
 
   update {
     rule {
-      output.status == "pending"
+      output.status in ["pending", "progress"]
       input.status in ["done", "cancelled"]
     }
     modify {

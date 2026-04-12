@@ -175,7 +175,7 @@ func TestWalletTransferScenario_TransferWithValidation(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, tx["id"])
-	assert.Equal(t, "pending", tx["status"])
+	assert.Equal(t, "progress", tx["status"])
 	assert.Equal(t, 100.0, tx["amount"])
 }
 
@@ -247,8 +247,9 @@ func TestWalletTransferScenario_AggregateQuery(t *testing.T) {
 		"label":    "Main",
 	})
 
+	txIDs := []string{}
 	for _, amount := range []float64{50, 75, 125} {
-		exec.Create(ctx, "Transaction", map[string]interface{}{
+		tx, _ := exec.Create(ctx, "Transaction", map[string]interface{}{
 			"token":              "valid-jwt",
 			"fromWalletId":       walletA["id"],
 			"toWalletId":         walletB["id"],
@@ -256,11 +257,14 @@ func TestWalletTransferScenario_AggregateQuery(t *testing.T) {
 			"currency":           "USD",
 			"recipientEmail":     "bob@example.com",
 		})
+		txIDs = append(txIDs, tx["id"].(string))
 	}
 
-	exec.Update(ctx, "Transaction", "dummy-id", map[string]interface{}{
-		"status": "done",
-	})
+	for _, txID := range txIDs {
+		exec.Update(ctx, "Transaction", txID, map[string]interface{}{
+			"status": "done",
+		})
+	}
 
 	rows, err := exec.Read(ctx, "Transaction", map[string]interface{}{})
 	require.NoError(t, err)

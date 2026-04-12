@@ -7,7 +7,9 @@
       "Bash(go get:*)",
       "Bash(git -C \"C:/Users/seyit/OneDrive/Documents/GitHub/fookie\" status -s)",
       "Bash(git -C \"C:/Users/seyit/OneDrive/Documents/GitHub/fookie\" add pkg/ast/types.go pkg/parser/lexer.go pkg/parser/parser.go pkg/compiler/sqlgen.go pkg/runtime/executor.go pkg/validator/)",
-      "Bash(git -C:*)"
+      "Bash(git -C:*)",
+      "Bash(go clean:*)",
+      "Bash(git add:*)"
     ]
   }
 }

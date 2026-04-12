@@ -243,7 +243,15 @@ func (e *Executor) execBlock(ctx context.Context, block *ast.Block, rc *runCtx) 
 			if err != nil {
 				return fmt.Errorf("assign %s: %w", s.Name, err)
 			}
-			rc.vars[s.Name] = val
+			if s.Name == "principal" {
+				if m, ok := val.(map[string]interface{}); ok {
+					for k, v := range m {
+						rc.principal[k] = v
+					}
+				}
+			} else {
+				rc.vars[s.Name] = val
+			}
 
 		case *ast.PredicateExpr:
 			val, err := e.evalExpr(ctx, s.Expr, rc)
