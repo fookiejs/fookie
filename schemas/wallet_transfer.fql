@@ -1,0 +1,161 @@
+external ValidateToken {
+  input {
+    token: string
+  }
+  output {
+    userId: id
+    valid: boolean
+  }
+}
+
+external FraudCheck {
+  input {
+    amount: number
+    fromWalletId: id
+    toWalletId: id
+  }
+  output {
+    allowed: boolean
+    riskScore: number
+  }
+}
+
+external SendTransferNotification {
+  input {
+    userId: id
+    amount: number
+    recipientEmail: email
+  }
+  output {
+    messageId: string
+    sent: boolean
+  }
+}
+
+model User {
+  fields {
+    email: email
+    name: string
+    status: string
+  }
+
+  create {
+    rule {
+      isEmail(input.email)
+    }
+    modify {
+      email = input.email
+      name = input.name
+      status = "active"
+    }
+  }
+
+  read {
+    where {
+      status == "active"
+    }
+  }
+
+  update {
+    rule {
+      output.id != null
+    }
+    modify {
+      name = input.name
+    }
+  }
+}
+
+model Wallet {
+  fields {
+    userId: id
+    balance: number
+    currency: currency
+    label: string
+  }
+
+  create {
+    rule {
+      input.balance >= 0
+      isISOCurrency(input.currency)
+    }
+    modify {
+      userId = input.userId
+      balance = input.balance
+      currency = input.currency
+      label = input.label
+    }
+  }
+
+  read(id, userId, balance, currency) {
+    where {
+      userId == principal.userId
+    }
+  }
+
+  update {
+    rule {
+      output.userId == principal.userId
+      input.balance >= 0
+    }
+    modify {
+      balance = input.balance
+    }
+  }
+}
+
+model Transaction {
+  fields {
+    fromWalletId: id
+    toWalletId: id
+    amount: number
+    currency: currency
+    status: string
+    riskScore: number
+  }
+
+  create {
+    role {
+      principal = ValidateToken(token: input.token)
+    }
+
+    rule {
+      principal.valid == true
+      input.amount > 0
+      input.amount <= 1000000
+    }
+
+    modify {
+      fromWalletId = input.fromWalletId
+      toWalletId = input.toWalletId
+      amount = input.amount
+      currency = input.currency
+      status = "pending"
+      riskScore = 0
+    }
+
+    effect {
+      SendTransferNotification({
+        userId: principal.userId
+        amount: input.amount
+        recipientEmail: input.recipientEmail
+      })
+    }
+  }
+
+  read(total: sum(amount), count: count(id), avgRisk: avg(riskScore)) {
+    where {
+      status == "done"
+    }
+  }
+
+  update {
+    rule {
+      output.status == "pending"
+      input.status in ["done", "cancelled"]
+    }
+    modify {
+      status = input.status
+    }
+  }
+}
