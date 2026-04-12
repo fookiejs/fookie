@@ -155,9 +155,9 @@ func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string 
 	projection := sg.buildProjection(op.Select)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("SELECT %s\nFROM %s", projection, table))
+	b.WriteString(fmt.Sprintf("SELECT %s\nFROM \"%s\"", projection, table))
 
-	b.WriteString("\nWHERE deleted_at IS NULL")
+	b.WriteString("\nWHERE \"deleted_at\" IS NULL")
 
 	if op.Where != nil {
 		for _, cond := range op.Where.Conditions {
@@ -202,16 +202,16 @@ func (sg *SQLGenerator) compileSelectField(sf *ast.SelectField) string {
 	case ast.PlainField:
 		col := snake(strings.Join(e.Path, "_"))
 		if sf.Alias != "" {
-			return fmt.Sprintf("%s AS %s", col, sf.Alias)
+			return fmt.Sprintf("\"%s\" AS \"%s\"", col, sf.Alias)
 		}
-		return col
+		return fmt.Sprintf("\"%s\"", col)
 
 	case *ast.AggregateFunc:
 		col := snake(strings.Join(e.Field, "_"))
 		fn := strings.ToUpper(e.Fn)
-		agg := fmt.Sprintf("%s(%s)", fn, col)
+		agg := fmt.Sprintf("%s(\"%s\")", fn, col)
 		if sf.Alias != "" {
-			return fmt.Sprintf("%s AS %s", agg, sf.Alias)
+			return fmt.Sprintf("%s AS \"%s\"", agg, sf.Alias)
 		}
 		return agg
 
@@ -228,14 +228,14 @@ func (sg *SQLGenerator) CompileInsert(model *ast.Model, data map[string]interfac
 
 	i := 1
 	for k := range data {
-		cols = append(cols, snake(k))
+		cols = append(cols, fmt.Sprintf("\"%s\"", snake(k)))
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
 		orderedKeys = append(orderedKeys, k)
 		i++
 	}
 
 	sql := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s) RETURNING id, created_at, status;",
+		"INSERT INTO \"%s\" (%s) VALUES (%s) RETURNING \"id\", \"created_at\", \"status\";",
 		table,
 		strings.Join(cols, ", "),
 		strings.Join(placeholders, ", "),
@@ -251,14 +251,14 @@ func (sg *SQLGenerator) CompileUpdate(model *ast.Model, data map[string]interfac
 
 	i := 1
 	for k := range data {
-		sets = append(sets, fmt.Sprintf("%s = $%d", snake(k), i))
+		sets = append(sets, fmt.Sprintf("\"%s\" = $%d", snake(k), i))
 		orderedKeys = append(orderedKeys, k)
 		i++
 	}
 	idPlaceholder := fmt.Sprintf("$%d", i)
 
 	sql := fmt.Sprintf(
-		"UPDATE %s SET %s, updated_at = NOW() WHERE id = %s AND deleted_at IS NULL RETURNING id, updated_at, status;",
+		"UPDATE \"%s\" SET %s, \"updated_at\" = NOW() WHERE \"id\" = %s AND \"deleted_at\" IS NULL RETURNING \"id\", \"updated_at\", \"status\";",
 		table,
 		strings.Join(sets, ", "),
 		idPlaceholder,
@@ -268,7 +268,7 @@ func (sg *SQLGenerator) CompileUpdate(model *ast.Model, data map[string]interfac
 
 func (sg *SQLGenerator) CompileSoftDelete(model *ast.Model) string {
 	return fmt.Sprintf(
-		"UPDATE %s SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL;",
+		"UPDATE \"%s\" SET \"deleted_at\" = NOW(), \"updated_at\" = NOW() WHERE \"id\" = $1 AND \"deleted_at\" IS NULL;",
 		snake(model.Name),
 	)
 }

@@ -36,7 +36,6 @@ model User {
   fields {
     email: email
     name: string
-    status: string
   }
 
   create {
@@ -110,7 +109,6 @@ model Transaction {
     toWalletId: id
     amount: number
     currency: currency
-    status: string
     riskScore: number
   }
 
