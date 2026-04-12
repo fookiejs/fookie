@@ -23,34 +23,28 @@ var (
 func main() {
 	flag.Parse()
 
-	// Setup logger
 	logger := logrus.New()
 	logger.SetLevel(logrus.DebugLevel)
 
-	// Connect to database
 	db, err := sql.Open("postgres", *dbURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
-	// Test connection
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
 	logger.Info("Connected to database")
 
-	// Create external manager
 	externalMgr := runtime.NewExternalManager()
 
-	// Create outbox processor
 	processor := runtime.NewOutboxProcessor(externalMgr)
 	processor.Start(*pollInterval)
 
 	logger.Infof("Started outbox processor with %v poll interval", *pollInterval)
 
-	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -59,7 +53,6 @@ func main() {
 
 	processor.Stop()
 
-	// Give in-flight operations time to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -67,7 +60,6 @@ func main() {
 	logger.Info("Worker shutdown complete")
 }
 
-// ProcessOutboxJobs continuously processes pending outbox items
 func ProcessOutboxJobs(ctx context.Context, db *sql.DB, manager *runtime.ExternalManager, logger *logrus.Logger) error {
 	for {
 		select {
@@ -76,7 +68,6 @@ func ProcessOutboxJobs(ctx context.Context, db *sql.DB, manager *runtime.Externa
 		default:
 		}
 
-		// Query for pending jobs
 		rows, err := db.QueryContext(ctx, `
 			SELECT id, entity_type, entity_id, external_name, payload
 			FROM outbox
@@ -105,11 +96,8 @@ func ProcessOutboxJobs(ctx context.Context, db *sql.DB, manager *runtime.Externa
 				continue
 			}
 
-			// Execute external call
-			// TODO: Parse payload and call external service
 			logger.Infof("Processing outbox job: %s (external: %s)", id, externalName)
 
-			// Mark as processed
 			_, err = db.ExecContext(ctx, `
 				UPDATE outbox
 				SET status = 'processed', processed_at = NOW()

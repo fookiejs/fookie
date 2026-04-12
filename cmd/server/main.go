@@ -32,17 +32,14 @@ type Server struct {
 func main() {
 	flag.Parse()
 
-	// Setup logger
 	logger := logrus.New()
 	logger.SetLevel(logrus.DebugLevel)
 
-	// Read schema file
 	schemaContent, err := os.ReadFile(*schemaPath)
 	if err != nil {
 		log.Fatalf("Failed to read schema: %v", err)
 	}
 
-	// Parse FSL
 	lexer := parser.NewLexer(string(schemaContent))
 	tokens := lexer.Tokenize()
 	p := parser.NewParser(tokens)
@@ -54,7 +51,6 @@ func main() {
 	logger.Infof("Parsed schema with %d models, %d externals, %d modules",
 		len(schema.Models), len(schema.Externals), len(schema.Modules))
 
-	// Generate SQL
 	sqlGen := compiler.NewSQLGenerator(schema)
 	sqls, err := sqlGen.Generate()
 	if err != nil {
@@ -63,36 +59,30 @@ func main() {
 
 	logger.Infof("Generated %d SQL statements", len(sqls))
 
-	// Connect to database
 	db, err := sql.Open("postgres", *dbURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
-	// Run migrations
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	for i, sqlStmt := range sqls {
 		if _, err := db.ExecContext(ctx, sqlStmt); err != nil {
 			logger.Warnf("Failed to execute SQL statement %d: %v", i, err)
-			// Continue on error
 		}
 	}
 
-	// Create executor
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
 
-	// Setup server
 	srv := &Server{
 		db:       db,
 		executor: executor,
 		logger:   logger,
 	}
 
-	// Routes
 	http.HandleFunc("/health", srv.handleHealth)
 	http.HandleFunc("/operations", srv.handleOperations)
 	http.HandleFunc("/models", srv.handleModels)
@@ -108,14 +98,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement operation execution endpoint
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"operations":[]}`)
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement model list endpoint
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"models":[]}`)

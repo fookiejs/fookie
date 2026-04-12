@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/fookiejs/fookie/pkg/ast"
@@ -81,7 +82,6 @@ func TestSQLGeneratorForeignKeys(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Check for foreign key constraint
 	walletSQL := ""
 	for _, sql := range sqls {
 		if contains(sql, "wallet") {
@@ -105,7 +105,6 @@ func TestSQLGeneratorAuditLogTable(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Check for implicit audit log table
 	foundAuditLog := false
 	for _, sql := range sqls {
 		if contains(sql, "audit_logs") {
@@ -128,7 +127,6 @@ func TestSQLGeneratorOutboxTable(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Check for implicit outbox table
 	foundOutbox := false
 	for _, sql := range sqls {
 		if contains(sql, "outbox") {
@@ -175,9 +173,8 @@ func TestSQLGeneratorTypeMapping(t *testing.T) {
 	assert.Contains(t, sql, "JSONB")
 }
 
-// Helper functions
 func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) > len(substr))
+	return strings.Contains(s, substr)
 }
 
 func strPtr(s string) *string {

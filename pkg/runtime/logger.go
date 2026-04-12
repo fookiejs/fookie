@@ -2,7 +2,12 @@ package runtime
 
 import "github.com/sirupsen/logrus"
 
-// LoggerWrapper wraps logrus.Logger to match our Logger interface
+type Logger interface {
+	Info(msg string, args ...interface{})
+	Warn(msg string, args ...interface{})
+	Error(msg string, args ...interface{})
+}
+
 type LoggerWrapper struct {
 	*logrus.Logger
 }
@@ -31,7 +36,6 @@ func (l *LoggerWrapper) Warn(msg string, args ...interface{}) {
 	}
 }
 
-// NewLoggerWrapper creates a new logger wrapper
 func NewLoggerWrapper(logger *logrus.Logger) Logger {
 	return &LoggerWrapper{logger}
 }

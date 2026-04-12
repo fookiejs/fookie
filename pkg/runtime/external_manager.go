@@ -7,24 +7,20 @@ import (
 	"time"
 )
 
-// ExternalManager manages external service calls with retry logic and caching
 type ExternalManager struct {
 	handlers map[string]ExternalHandler
 	mu       sync.RWMutex
 	cache    map[string]*CachedResult
 }
 
-// ExternalHandler processes external service calls
 type ExternalHandler func(ctx context.Context, input map[string]interface{}) (map[string]interface{}, error)
 
-// CachedResult stores the result of an external call for idempotency
 type CachedResult struct {
 	Result    map[string]interface{}
 	Timestamp time.Time
 	TTL       time.Duration
 }
 
-// NewExternalManager creates a new external manager
 func NewExternalManager() *ExternalManager {
 	return &ExternalManager{
 		handlers: make(map[string]ExternalHandler),
@@ -32,47 +28,40 @@ func NewExternalManager() *ExternalManager {
 	}
 }
 
-// Register registers an external handler
 func (em *ExternalManager) Register(name string, handler ExternalHandler) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
 	em.handlers[name] = handler
 }
 
-// Call executes an external service call with retry and caching
 func (em *ExternalManager) Call(ctx context.Context, name string, input map[string]interface{}) (map[string]interface{}, error) {
 	em.mu.RLock()
 	handler, exists := em.handlers[name]
 	em.mu.RUnlock()
 
 	if !exists {
-		// Built-in handlers
 		return em.handleBuiltin(ctx, name, input)
 	}
 
-	// Check cache for idempotency
 	cacheKey := fmt.Sprintf("%s:%v", name, input)
 	if cached := em.getCached(cacheKey); cached != nil {
 		return cached, nil
 	}
 
-	// Call with retry logic
 	result, err := em.callWithRetry(ctx, handler, input)
 	if err != nil {
 		return nil, fmt.Errorf("external %s failed: %v", name, err)
 	}
 
-	// Cache result
 	em.cache[cacheKey] = &CachedResult{
 		Result:    result,
 		Timestamp: time.Now(),
-		TTL:       5 * time.Minute, // Default TTL
+		TTL:       5 * time.Minute,
 	}
 
 	return result, nil
 }
 
-// callWithRetry executes handler with exponential backoff retry
 func (em *ExternalManager) callWithRetry(ctx context.Context, handler ExternalHandler, input map[string]interface{}) (map[string]interface{}, error) {
 	maxRetries := 3
 	backoff := 100 * time.Millisecond
@@ -88,7 +77,7 @@ func (em *ExternalManager) callWithRetry(ctx context.Context, handler ExternalHa
 		if attempt < maxRetries-1 {
 			select {
 			case <-time.After(backoff):
-				backoff *= 2 // Exponential backoff
+				backoff *= 2
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -98,7 +87,6 @@ func (em *ExternalManager) callWithRetry(ctx context.Context, handler ExternalHa
 	return nil, fmt.Errorf("external call failed after %d retries: %v", maxRetries, lastErr)
 }
 
-// getCached retrieves cached result if still valid
 func (em *ExternalManager) getCached(key string) map[string]interface{} {
 	em.mu.RLock()
 	defer em.mu.RUnlock()
@@ -109,13 +97,12 @@ func (em *ExternalManager) getCached(key string) map[string]interface{} {
 	}
 
 	if time.Since(cached.Timestamp) > cached.TTL {
-		return nil // Expired
+		return nil
 	}
 
 	return cached.Result
 }
 
-// handleBuiltin handles built-in externals (for testing/mocking)
 func (em *ExternalManager) handleBuiltin(ctx context.Context, name string, input map[string]interface{}) (map[string]interface{}, error) {
 	switch name {
 	case "ValidateToken":
@@ -129,8 +116,6 @@ func (em *ExternalManager) handleBuiltin(ctx context.Context, name string, input
 	}
 }
 
-// Built-in external handlers (for testing/demo)
-
 func (em *ExternalManager) handleValidateToken(input map[string]interface{}) (map[string]interface{}, error) {
 	token, ok := input["token"].(string)
 	if !ok || token == "" {
@@ -139,7 +124,6 @@ func (em *ExternalManager) handleValidateToken(input map[string]interface{}) (ma
 		}, fmt.Errorf("invalid token format")
 	}
 
-	// Mock validation: any non-empty token is valid
 	return map[string]interface{}{
 		"valid":    true,
 		"userId":   "user-123",
@@ -154,9 +138,8 @@ func (em *ExternalManager) handleFraudCheck(input map[string]interface{}) (map[s
 		return nil, fmt.Errorf("invalid amount")
 	}
 
-	// Mock fraud check: amounts > 10000 are flagged as high risk
 	allowed := amount <= 10000
-	score := int(amount / 100) // Higher amount = higher score
+	score := int(amount / 100)
 
 	return map[string]interface{}{
 		"allowed": allowed,
@@ -164,15 +147,13 @@ func (em *ExternalManager) handleFraudCheck(input map[string]interface{}) (map[s
 	}, nil
 }
 
-// OutboxProcessor processes pending outbox jobs (external calls)
 type OutboxProcessor struct {
 	manager *ExternalManager
-	db      interface{} // Would be *sql.DB in real implementation
+	db      interface{}
 	ticker  *time.Ticker
 	done    chan struct{}
 }
 
-// NewOutboxProcessor creates a new outbox processor
 func NewOutboxProcessor(manager *ExternalManager) *OutboxProcessor {
 	return &OutboxProcessor{
 		manager: manager,
@@ -180,7 +161,6 @@ func NewOutboxProcessor(manager *ExternalManager) *OutboxProcessor {
 	}
 }
 
-// Start begins processing outbox jobs
 func (op *OutboxProcessor) Start(interval time.Duration) {
 	op.ticker = time.NewTicker(interval)
 	go func() {
@@ -196,27 +176,17 @@ func (op *OutboxProcessor) Start(interval time.Duration) {
 	}()
 }
 
-// Stop stops the processor
 func (op *OutboxProcessor) Stop() {
 	close(op.done)
 }
 
-// processPending retrieves and processes pending outbox jobs
 func (op *OutboxProcessor) processPending() {
-	// TODO: Query outbox table for pending jobs
-	// For each job:
-	// 1. Call external service
-	// 2. Mark as processed or failed
-	// 3. Emit event if needed
 }
 
-// EventEmitter emits events to event log for compensation/saga handling
 type EventEmitter struct {
 	db interface{}
 }
 
-// Emit creates an event in the event log
 func (ee *EventEmitter) Emit(entityType string, entityID string, eventType string, payload map[string]interface{}) error {
-	// TODO: INSERT into event_logs table
 	return nil
 }

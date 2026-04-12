@@ -33,11 +33,11 @@ func (sg *SQLGenerator) Generate() ([]string, error) {
 
 func (sg *SQLGenerator) modelDDL(m *ast.Model) string {
 	cols := []string{
-		"id          UUID PRIMARY KEY DEFAULT gen_random_uuid()",
-		"created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-		"updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-		"status      VARCHAR(64)  NOT NULL DEFAULT 'initiate'",
-		"deleted_at  TIMESTAMPTZ",
+		`"id" UUID PRIMARY KEY DEFAULT gen_random_uuid()`,
+		`"created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+		`"updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+		`"status" VARCHAR(64) NOT NULL DEFAULT 'initiate'`,
+		`"deleted_at" TIMESTAMPTZ`,
 	}
 
 	for _, f := range m.Fields {
@@ -45,7 +45,7 @@ func (sg *SQLGenerator) modelDDL(m *ast.Model) string {
 	}
 
 	return fmt.Sprintf(
-		"CREATE TABLE IF NOT EXISTS %s (\n  %s\n);",
+		"CREATE TABLE IF NOT EXISTS \"%s\" (\n  %s\n);",
 		snake(m.Name), strings.Join(cols, ",\n  "),
 	)
 }
@@ -53,7 +53,7 @@ func (sg *SQLGenerator) modelDDL(m *ast.Model) string {
 func (sg *SQLGenerator) fieldDDL(f *ast.Field) string {
 	col := snake(f.Name)
 	sqlType := fieldSQLType(f)
-	def := fmt.Sprintf("%s %s", col, sqlType)
+	def := fmt.Sprintf(`"%s" %s`, col, sqlType)
 
 	for _, c := range f.Constraints {
 		switch c {
@@ -108,45 +108,45 @@ func fieldSQLType(f *ast.Field) string {
 }
 
 func (sg *SQLGenerator) auditLogDDL() string {
-	return `CREATE TABLE IF NOT EXISTS audit_logs (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  transaction_id UUID,
-  user_id        UUID,
-  action         VARCHAR(255),
-  details        JSONB,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	return `CREATE TABLE IF NOT EXISTS "audit_logs" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "transaction_id" UUID,
+  "user_id" UUID,
+  "action" VARCHAR(255),
+  "details" JSONB,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_audit_logs_tx  ON audit_logs(transaction_id);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_usr ON audit_logs(user_id);`
+CREATE INDEX IF NOT EXISTS idx_audit_logs_tx ON "audit_logs"("transaction_id");
+CREATE INDEX IF NOT EXISTS idx_audit_logs_usr ON "audit_logs"("user_id");`
 }
 
 func (sg *SQLGenerator) eventLogDDL() string {
-	return `CREATE TABLE IF NOT EXISTS event_logs (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  entity_type VARCHAR(255),
-  entity_id   UUID,
-  event_type  VARCHAR(255),
-  payload     JSONB,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	return `CREATE TABLE IF NOT EXISTS "event_logs" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "entity_type" VARCHAR(255),
+  "entity_id" UUID,
+  "event_type" VARCHAR(255),
+  "payload" JSONB,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_event_logs_entity ON event_logs(entity_type, entity_id);`
+CREATE INDEX IF NOT EXISTS idx_event_logs_entity ON "event_logs"("entity_type", "entity_id");`
 }
 
 func (sg *SQLGenerator) outboxDDL() string {
-	return `CREATE TABLE IF NOT EXISTS outbox (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  entity_type   VARCHAR(255) NOT NULL,
-  entity_id     UUID,
-  external_name VARCHAR(255) NOT NULL,
-  payload       JSONB,
-  status        VARCHAR(64) NOT NULL DEFAULT 'pending',
-  retry_count   INT         NOT NULL DEFAULT 0,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  processed_at  TIMESTAMPTZ,
-  error_message TEXT
+	return `CREATE TABLE IF NOT EXISTS "outbox" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "entity_type" VARCHAR(255) NOT NULL,
+  "entity_id" UUID,
+  "external_name" VARCHAR(255) NOT NULL,
+  "payload" JSONB,
+  "status" VARCHAR(64) NOT NULL DEFAULT 'pending',
+  "retry_count" INT NOT NULL DEFAULT 0,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "processed_at" TIMESTAMPTZ,
+  "error_message" TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
-CREATE INDEX IF NOT EXISTS idx_outbox_entity ON outbox(entity_type, entity_id);`
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON "outbox"("status");
+CREATE INDEX IF NOT EXISTS idx_outbox_entity ON "outbox"("entity_type", "entity_id");`
 }
 
 func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string {

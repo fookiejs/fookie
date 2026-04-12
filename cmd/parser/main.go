@@ -25,13 +25,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Read file
 	content, err := ioutil.ReadFile(*schemaFile)
 	if err != nil {
 		log.Fatalf("Failed to read file: %v", err)
 	}
 
-	// Lex and parse
 	lexer := parser.NewLexer(string(content))
 	tokens := lexer.Tokenize()
 
@@ -62,7 +60,6 @@ func main() {
 		fmt.Printf("    - %s\n", m.Name)
 	}
 
-	// Generate SQL if requested
 	if *outputSQL {
 		fmt.Println("\n--- SQL Generation ---")
 		sqlGen := compiler.NewSQLGenerator(schema)
