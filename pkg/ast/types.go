@@ -1,8 +1,6 @@
 package ast
 
-import (
-	"time"
-)
+import "time"
 
 type Schema struct {
 	Models    []*Model
@@ -35,6 +33,17 @@ const (
 	TypeTimestamp FieldType = "timestamp"
 	TypeJSON      FieldType = "json"
 	TypeRelation  FieldType = "relation"
+
+	TypeEmail      FieldType = "email"
+	TypeURL        FieldType = "url"
+	TypePhone      FieldType = "phone"
+	TypeUUID       FieldType = "uuid"
+	TypeCoordinate FieldType = "coordinate"
+	TypeColor      FieldType = "color"
+	TypeCurrency   FieldType = "currency"
+	TypeLocale     FieldType = "locale"
+	TypeIBAN       FieldType = "iban"
+	TypeIPAddress  FieldType = "ipaddress"
 )
 
 type Operation struct {
@@ -46,8 +55,31 @@ type Operation struct {
 	Where   *WhereClause
 	OrderBy []*OrderBy
 	Cursor  *Cursor
-	Return  []*string
+	Select  []*SelectField
+	Lock    bool
 }
+
+type SelectField struct {
+	Alias string
+	Expr  SelectExpr
+}
+
+type SelectExpr interface {
+	selectExprMarker()
+}
+
+type PlainField struct {
+	Path []string
+}
+
+func (PlainField) selectExprMarker() {}
+
+type AggregateFunc struct {
+	Fn    string
+	Field []string
+}
+
+func (AggregateFunc) selectExprMarker() {}
 
 type Block struct {
 	Statements []Statement
@@ -65,6 +97,22 @@ type Assignment struct {
 
 func (Assignment) statementMarker() {}
 
+type ModifyAssignment struct {
+	Field  string
+	Value  Expression
+	LineNo int
+}
+
+func (ModifyAssignment) statementMarker() {}
+
+type PredicateExpr struct {
+	Expr   Expression
+	LineNo int
+}
+
+func (PredicateExpr) statementMarker()  {}
+func (PredicateExpr) expressionMarker() {}
+
 type Expression interface {
 	expressionMarker()
 }
@@ -77,17 +125,26 @@ type ExternalCall struct {
 
 func (ExternalCall) expressionMarker() {}
 
+type BuiltinCall struct {
+	Name   string
+	Args   []Expression
+	LineNo int
+}
+
+func (BuiltinCall) expressionMarker() {}
+
 type ReadQuery struct {
-	Model     string
-	Predicate *Expression
-	LineNo    int
+	Model  string
+	Where  []Expression
+	Lock   bool
+	LineNo int
 }
 
 func (ReadQuery) expressionMarker() {}
 
 type FieldAccess struct {
-	Object string   // "principal", "input", "fromWallet", etc.
-	Fields []string // "userId", "amount", etc. (supports nesting)
+	Object string
+	Fields []string
 	LineNo int
 }
 
@@ -109,13 +166,21 @@ type BinaryOp struct {
 
 func (BinaryOp) expressionMarker() {}
 
-type PredicateExpr struct {
-	Expr   Expression
+type UnaryOp struct {
+	Op     string
+	Right  Expression
 	LineNo int
 }
 
-func (PredicateExpr) expressionMarker() {}
-func (PredicateExpr) statementMarker()  {}
+func (UnaryOp) expressionMarker() {}
+
+type InExpr struct {
+	Left   Expression
+	Values []Expression
+	LineNo int
+}
+
+func (InExpr) expressionMarker() {}
 
 type WhereClause struct {
 	Conditions []Expression
@@ -128,7 +193,7 @@ type OrderBy struct {
 
 type Cursor struct {
 	Size   int
-	Offset int
+	After  *string
 }
 
 type External struct {

@@ -1,31 +1,28 @@
 package parser
 
-import (
-	"unicode"
-)
+import "unicode"
 
-// Token types for FSL
 type TokenType int
 
 const (
 	TOKEN_EOF TokenType = iota
 	TOKEN_NEWLINE
-	TOKEN_INDENT
-	TOKEN_DEDENT
 
-	// Keywords
 	TOKEN_MODEL
 	TOKEN_EXTERNAL
 	TOKEN_MODULE
+	TOKEN_USE
+
 	TOKEN_CREATE
 	TOKEN_READ
 	TOKEN_UPDATE
 	TOKEN_DELETE
-	TOKEN_USE
+
 	TOKEN_ROLE
 	TOKEN_RULE
 	TOKEN_MODIFY
 	TOKEN_EFFECT
+
 	TOKEN_WHERE
 	TOKEN_ORDERBY
 	TOKEN_CURSOR
@@ -34,7 +31,22 @@ const (
 	TOKEN_OUTPUT
 	TOKEN_FIELDS
 
-	// Types
+	TOKEN_SUM
+	TOKEN_COUNT
+	TOKEN_AVG
+	TOKEN_MIN
+	TOKEN_MAX
+
+	TOKEN_LOCK
+	TOKEN_SIZE
+	TOKEN_ASC
+	TOKEN_DESC
+	TOKEN_IN
+	TOKEN_NOT
+	TOKEN_NULL
+	TOKEN_TRUE
+	TOKEN_FALSE
+
 	TOKEN_STRING_TYPE
 	TOKEN_NUMBER_TYPE
 	TOKEN_BOOLEAN_TYPE
@@ -43,14 +55,10 @@ const (
 	TOKEN_TIMESTAMP_TYPE
 	TOKEN_JSON_TYPE
 
-	// Literals
 	TOKEN_IDENTIFIER
 	TOKEN_STRING
 	TOKEN_NUMBER
-	TOKEN_BOOL
-	TOKEN_NULL
 
-	// Operators
 	TOKEN_ASSIGN    // =
 	TOKEN_EQ        // ==
 	TOKEN_NE        // !=
@@ -60,7 +68,7 @@ const (
 	TOKEN_GE        // >=
 	TOKEN_AND       // &&
 	TOKEN_OR        // ||
-	TOKEN_NOT       // !
+	TOKEN_BANG      // !
 	TOKEN_PLUS      // +
 	TOKEN_MINUS     // -
 	TOKEN_MULT      // *
@@ -68,7 +76,6 @@ const (
 	TOKEN_DOT       // .
 	TOKEN_COMMA     // ,
 	TOKEN_COLON     // :
-	TOKEN_SEMICOLON // ;
 	TOKEN_LPAREN    // (
 	TOKEN_RPAREN    // )
 	TOKEN_LBRACE    // {
@@ -76,7 +83,6 @@ const (
 	TOKEN_LBRACKET  // [
 	TOKEN_RBRACKET  // ]
 
-	TOKEN_COMMENT
 	TOKEN_CONSTRAINT
 )
 
@@ -87,37 +93,46 @@ type Token struct {
 	ColNo  int
 }
 
-type Lexer struct {
-	input           []rune
-	position        int
-	current         rune
-	lineNo          int
-	colNo           int
-	tokens          []Token
-	indentStack     []int
-	pendingDeindent int
-}
-
 var keywords = map[string]TokenType{
-	"model":     TOKEN_MODEL,
-	"external":  TOKEN_EXTERNAL,
-	"module":    TOKEN_MODULE,
-	"create":    TOKEN_CREATE,
-	"read":      TOKEN_READ,
-	"update":    TOKEN_UPDATE,
-	"delete":    TOKEN_DELETE,
-	"use":       TOKEN_USE,
-	"role":      TOKEN_ROLE,
-	"rule":      TOKEN_RULE,
-	"modify":    TOKEN_MODIFY,
-	"effect":    TOKEN_EFFECT,
-	"where":     TOKEN_WHERE,
-	"orderBy":   TOKEN_ORDERBY,
-	"cursor":    TOKEN_CURSOR,
-	"return":    TOKEN_RETURN,
-	"input":     TOKEN_INPUT,
-	"output":    TOKEN_OUTPUT,
-	"fields":    TOKEN_FIELDS,
+	"model":    TOKEN_MODEL,
+	"external": TOKEN_EXTERNAL,
+	"module":   TOKEN_MODULE,
+	"use":      TOKEN_USE,
+
+	"create": TOKEN_CREATE,
+	"read":   TOKEN_READ,
+	"update": TOKEN_UPDATE,
+	"delete": TOKEN_DELETE,
+
+	"role":   TOKEN_ROLE,
+	"rule":   TOKEN_RULE,
+	"modify": TOKEN_MODIFY,
+	"effect": TOKEN_EFFECT,
+
+	"where":   TOKEN_WHERE,
+	"orderBy": TOKEN_ORDERBY,
+	"cursor":  TOKEN_CURSOR,
+	"return":  TOKEN_RETURN,
+	"input":   TOKEN_INPUT,
+	"output":  TOKEN_OUTPUT,
+	"fields":  TOKEN_FIELDS,
+
+	"sum":   TOKEN_SUM,
+	"count": TOKEN_COUNT,
+	"avg":   TOKEN_AVG,
+	"min":   TOKEN_MIN,
+	"max":   TOKEN_MAX,
+
+	"lock":  TOKEN_LOCK,
+	"size":  TOKEN_SIZE,
+	"asc":   TOKEN_ASC,
+	"desc":  TOKEN_DESC,
+	"in":    TOKEN_IN,
+	"not":   TOKEN_NOT,
+	"null":  TOKEN_NULL,
+	"true":  TOKEN_TRUE,
+	"false": TOKEN_FALSE,
+
 	"string":    TOKEN_STRING_TYPE,
 	"number":    TOKEN_NUMBER_TYPE,
 	"boolean":   TOKEN_BOOLEAN_TYPE,
@@ -125,320 +140,264 @@ var keywords = map[string]TokenType{
 	"date":      TOKEN_DATE_TYPE,
 	"timestamp": TOKEN_TIMESTAMP_TYPE,
 	"json":      TOKEN_JSON_TYPE,
-	"true":      TOKEN_BOOL,
-	"false":     TOKEN_BOOL,
-	"null":      TOKEN_NULL,
 }
 
-func NewLexer(input string) *Lexer {
-	runes := []rune(input)
-	lex := &Lexer{
-		input:       runes,
-		position:    0,
-		lineNo:      1,
-		colNo:       1,
-		indentStack: []int{0},
+type Lexer struct {
+	src      []rune
+	pos      int
+	line     int
+	col      int
+}
+
+func NewLexer(src string) *Lexer {
+	return &Lexer{src: []rune(src), pos: 0, line: 1, col: 1}
+}
+
+func (l *Lexer) cur() rune {
+	if l.pos >= len(l.src) {
+		return 0
 	}
-	lex.advance()
-	return lex
+	return l.src[l.pos]
 }
 
-func (l *Lexer) advance() {
-	if l.position >= len(l.input) {
-		l.current = 0
+func (l *Lexer) peek1() rune {
+	if l.pos+1 >= len(l.src) {
+		return 0
+	}
+	return l.src[l.pos+1]
+}
+
+func (l *Lexer) eat() rune {
+	r := l.cur()
+	l.pos++
+	if r == '\n' {
+		l.line++
+		l.col = 1
 	} else {
-		l.current = l.input[l.position]
+		l.col++
 	}
-	l.position++
+	return r
 }
 
-func (l *Lexer) peek() rune {
-	if l.position >= len(l.input) {
-		return 0
-	}
-	return l.input[l.position]
-}
-
-func (l *Lexer) peekN(n int) rune {
-	pos := l.position + n - 1
-	if pos >= len(l.input) {
-		return 0
-	}
-	return l.input[pos]
-}
-
-func (l *Lexer) skipWhitespace() {
-	for l.current == ' ' || l.current == '\t' {
-		if l.current == '\t' {
-			l.colNo += 4
-		} else {
-			l.colNo++
+func (l *Lexer) skipWhitespaceAndComments() {
+	for {
+		for l.cur() == ' ' || l.cur() == '\t' || l.cur() == '\r' {
+			l.eat()
 		}
-		l.advance()
-	}
-}
-
-func (l *Lexer) skipComment() {
-	if l.current == '#' {
-		for l.current != '\n' && l.current != 0 {
-			l.advance()
+		if (l.cur() == '/' && l.peek1() == '/') || l.cur() == '#' {
+			for l.cur() != '\n' && l.cur() != 0 {
+				l.eat()
+			}
+			continue
 		}
+		break
 	}
 }
 
 func (l *Lexer) readString(quote rune) string {
-	start := l.position - 1
-	for l.current != quote && l.current != 0 {
-		if l.current == '\\' {
-			l.advance()
+	l.eat()
+	var buf []rune
+	for l.cur() != quote && l.cur() != 0 {
+		if l.cur() == '\\' {
+			l.eat()
+			switch l.cur() {
+			case 'n':
+				buf = append(buf, '\n')
+			case 't':
+				buf = append(buf, '\t')
+			default:
+				buf = append(buf, l.cur())
+			}
+			l.eat()
+		} else {
+			buf = append(buf, l.eat())
 		}
-		l.advance()
 	}
-	str := string(l.input[start : l.position-1])
-	if l.current == quote {
-		l.advance()
+	if l.cur() == quote {
+		l.eat()
 	}
-	return str
-}
-
-func (l *Lexer) readIdentifier() string {
-	start := l.position - 1
-	for isIdentifierChar(l.current) {
-		l.advance()
-	}
-	return string(l.input[start : l.position-1])
+	return string(buf)
 }
 
 func (l *Lexer) readNumber() string {
-	start := l.position - 1
-	for unicode.IsDigit(l.current) || l.current == '.' {
-		l.advance()
+	start := l.pos
+	for unicode.IsDigit(l.cur()) || l.cur() == '.' {
+		l.eat()
 	}
-	return string(l.input[start : l.position-1])
+	return string(l.src[start:l.pos])
 }
 
-func (l *Lexer) handleIndentation() []Token {
-	var tokens []Token
-
-	if l.current == '\n' {
-		l.lineNo++
-		l.colNo = 1
-		l.advance()
-
-		// Count spaces
-		indent := 0
-		for l.current == ' ' || l.current == '\t' {
-			if l.current == '\t' {
-				indent += 4
-			} else {
-				indent++
-			}
-			l.advance()
-		}
-
-		// Skip blank lines
-		if l.current == '\n' || l.current == '#' || l.current == 0 {
-			return tokens
-		}
-
-		currentIndent := l.indentStack[len(l.indentStack)-1]
-		if indent > currentIndent {
-			l.indentStack = append(l.indentStack, indent)
-			tokens = append(tokens, Token{Type: TOKEN_INDENT, LineNo: l.lineNo, ColNo: l.colNo})
-		} else if indent < currentIndent {
-			for len(l.indentStack) > 0 && l.indentStack[len(l.indentStack)-1] > indent {
-				l.indentStack = l.indentStack[:len(l.indentStack)-1]
-				tokens = append(tokens, Token{Type: TOKEN_DEDENT, LineNo: l.lineNo, ColNo: l.colNo})
-			}
-		}
+func (l *Lexer) readIdentifier() string {
+	start := l.pos
+	for unicode.IsLetter(l.cur()) || unicode.IsDigit(l.cur()) || l.cur() == '_' {
+		l.eat()
 	}
-	return tokens
+	return string(l.src[start:l.pos])
 }
 
 func (l *Lexer) NextToken() Token {
-	l.skipWhitespace()
+	l.skipWhitespaceAndComments()
 
-	if l.current == '#' {
-		l.skipComment()
-		return l.NextToken()
-	}
+	line, col := l.line, l.col
 
-	lineNo := l.lineNo
-	colNo := l.colNo
+	c := l.cur()
 
-	switch l.current {
-	case 0:
-		// EOF: emit remaining DEDENTs
-		if len(l.indentStack) > 1 {
-			l.indentStack = l.indentStack[:len(l.indentStack)-1]
-			return Token{Type: TOKEN_DEDENT, LineNo: lineNo, ColNo: colNo}
+	switch {
+	case c == 0:
+		return Token{Type: TOKEN_EOF, LineNo: line, ColNo: col}
+
+	case c == '\n':
+		l.eat()
+		return Token{Type: TOKEN_NEWLINE, LineNo: line, ColNo: col}
+
+	case c == '"' || c == '\'':
+		s := l.readString(c)
+		return Token{Type: TOKEN_STRING, Value: s, LineNo: line, ColNo: col}
+
+	case unicode.IsDigit(c) || (c == '-' && unicode.IsDigit(l.peek1())):
+		neg := ""
+		if c == '-' {
+			l.eat()
+			neg = "-"
 		}
-		return Token{Type: TOKEN_EOF, LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_NUMBER, Value: neg + l.readNumber(), LineNo: line, ColNo: col}
 
-	case '\n':
-		indents := l.handleIndentation()
-		if len(indents) > 0 {
-			return indents[0]
+	case isIdentStart(c):
+		ident := l.readIdentifier()
+		if tt, ok := keywords[ident]; ok {
+			return Token{Type: tt, Value: ident, LineNo: line, ColNo: col}
 		}
-		return Token{Type: TOKEN_NEWLINE, LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_IDENTIFIER, Value: ident, LineNo: line, ColNo: col}
 
-	case '"', '\'':
-		quote := l.current
-		l.advance()
-		str := l.readString(quote)
-		return Token{Type: TOKEN_STRING, Value: str, LineNo: lineNo, ColNo: colNo}
-
-	case '=':
-		l.advance()
-		if l.current == '=' {
-			l.advance()
-			return Token{Type: TOKEN_EQ, Value: "==", LineNo: lineNo, ColNo: colNo}
+	case c == '=':
+		l.eat()
+		if l.cur() == '=' {
+			l.eat()
+			return Token{Type: TOKEN_EQ, Value: "==", LineNo: line, ColNo: col}
 		}
-		return Token{Type: TOKEN_ASSIGN, Value: "=", LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_ASSIGN, Value: "=", LineNo: line, ColNo: col}
 
-	case '!':
-		l.advance()
-		if l.current == '=' {
-			l.advance()
-			return Token{Type: TOKEN_NE, Value: "!=", LineNo: lineNo, ColNo: colNo}
+	case c == '!':
+		l.eat()
+		if l.cur() == '=' {
+			l.eat()
+			return Token{Type: TOKEN_NE, Value: "!=", LineNo: line, ColNo: col}
 		}
-		return Token{Type: TOKEN_NOT, Value: "!", LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_BANG, Value: "!", LineNo: line, ColNo: col}
 
-	case '<':
-		l.advance()
-		if l.current == '=' {
-			l.advance()
-			return Token{Type: TOKEN_LE, Value: "<=", LineNo: lineNo, ColNo: colNo}
+	case c == '<':
+		l.eat()
+		if l.cur() == '=' {
+			l.eat()
+			return Token{Type: TOKEN_LE, Value: "<=", LineNo: line, ColNo: col}
 		}
-		return Token{Type: TOKEN_LT, Value: "<", LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_LT, Value: "<", LineNo: line, ColNo: col}
 
-	case '>':
-		l.advance()
-		if l.current == '=' {
-			l.advance()
-			return Token{Type: TOKEN_GE, Value: ">=", LineNo: lineNo, ColNo: colNo}
+	case c == '>':
+		l.eat()
+		if l.cur() == '=' {
+			l.eat()
+			return Token{Type: TOKEN_GE, Value: ">=", LineNo: line, ColNo: col}
 		}
-		return Token{Type: TOKEN_GT, Value: ">", LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_GT, Value: ">", LineNo: line, ColNo: col}
 
-	case '&':
-		l.advance()
-		if l.current == '&' {
-			l.advance()
-			return Token{Type: TOKEN_AND, Value: "&&", LineNo: lineNo, ColNo: colNo}
-		}
+	case c == '&' && l.peek1() == '&':
+		l.eat(); l.eat()
+		return Token{Type: TOKEN_AND, Value: "&&", LineNo: line, ColNo: col}
 
-	case '|':
-		l.advance()
-		if l.current == '|' {
-			l.advance()
-			return Token{Type: TOKEN_OR, Value: "||", LineNo: lineNo, ColNo: colNo}
-		}
+	case c == '|' && l.peek1() == '|':
+		l.eat(); l.eat()
+		return Token{Type: TOKEN_OR, Value: "||", LineNo: line, ColNo: col}
 
-	case '+':
-		l.advance()
-		return Token{Type: TOKEN_PLUS, Value: "+", LineNo: lineNo, ColNo: colNo}
+	case c == '+':
+		l.eat()
+		return Token{Type: TOKEN_PLUS, Value: "+", LineNo: line, ColNo: col}
 
-	case '-':
-		l.advance()
-		if l.current == '-' {
-			l.advance()
-			// Read constraint
-			constraint := "--"
-			for isIdentifierChar(l.current) || l.current == ' ' {
-				if l.current != ' ' {
-					constraint += string(l.current)
+	case c == '-':
+		l.eat()
+		if l.cur() == '-' {
+			l.eat()
+			l.skipWhitespaceAndComments()
+			word := l.readIdentifier()
+			constraint := "--" + word
+			pos := l.pos
+			l.skipWhitespaceAndComments()
+			if l.cur() == 'd' {
+				extra := l.readIdentifier()
+				if extra == "desc" {
+					constraint += " desc"
+				} else {
+					l.pos = pos
 				}
-				l.advance()
+			} else {
+				l.pos = pos
 			}
-			return Token{Type: TOKEN_CONSTRAINT, Value: constraint, LineNo: lineNo, ColNo: colNo}
+			return Token{Type: TOKEN_CONSTRAINT, Value: constraint, LineNo: line, ColNo: col}
 		}
-		return Token{Type: TOKEN_MINUS, Value: "-", LineNo: lineNo, ColNo: colNo}
+		return Token{Type: TOKEN_MINUS, Value: "-", LineNo: line, ColNo: col}
 
-	case '*':
-		l.advance()
-		return Token{Type: TOKEN_MULT, Value: "*", LineNo: lineNo, ColNo: colNo}
+	case c == '*':
+		l.eat()
+		return Token{Type: TOKEN_MULT, Value: "*", LineNo: line, ColNo: col}
 
-	case '/':
-		l.advance()
-		return Token{Type: TOKEN_DIV, Value: "/", LineNo: lineNo, ColNo: colNo}
+	case c == '/':
+		l.eat()
+		return Token{Type: TOKEN_DIV, Value: "/", LineNo: line, ColNo: col}
 
-	case '.':
-		l.advance()
-		return Token{Type: TOKEN_DOT, Value: ".", LineNo: lineNo, ColNo: colNo}
+	case c == '.':
+		l.eat()
+		return Token{Type: TOKEN_DOT, Value: ".", LineNo: line, ColNo: col}
 
-	case ',':
-		l.advance()
-		return Token{Type: TOKEN_COMMA, Value: ",", LineNo: lineNo, ColNo: colNo}
+	case c == ',':
+		l.eat()
+		return Token{Type: TOKEN_COMMA, Value: ",", LineNo: line, ColNo: col}
 
-	case ':':
-		l.advance()
-		return Token{Type: TOKEN_COLON, Value: ":", LineNo: lineNo, ColNo: colNo}
+	case c == ':':
+		l.eat()
+		return Token{Type: TOKEN_COLON, Value: ":", LineNo: line, ColNo: col}
 
-	case ';':
-		l.advance()
-		return Token{Type: TOKEN_SEMICOLON, Value: ";", LineNo: lineNo, ColNo: colNo}
+	case c == '(':
+		l.eat()
+		return Token{Type: TOKEN_LPAREN, Value: "(", LineNo: line, ColNo: col}
 
-	case '(':
-		l.advance()
-		return Token{Type: TOKEN_LPAREN, Value: "(", LineNo: lineNo, ColNo: colNo}
+	case c == ')':
+		l.eat()
+		return Token{Type: TOKEN_RPAREN, Value: ")", LineNo: line, ColNo: col}
 
-	case ')':
-		l.advance()
-		return Token{Type: TOKEN_RPAREN, Value: ")", LineNo: lineNo, ColNo: colNo}
+	case c == '{':
+		l.eat()
+		return Token{Type: TOKEN_LBRACE, Value: "{", LineNo: line, ColNo: col}
 
-	case '{':
-		l.advance()
-		return Token{Type: TOKEN_LBRACE, Value: "{", LineNo: lineNo, ColNo: colNo}
+	case c == '}':
+		l.eat()
+		return Token{Type: TOKEN_RBRACE, Value: "}", LineNo: line, ColNo: col}
 
-	case '}':
-		l.advance()
-		return Token{Type: TOKEN_RBRACE, Value: "}", LineNo: lineNo, ColNo: colNo}
+	case c == '[':
+		l.eat()
+		return Token{Type: TOKEN_LBRACKET, Value: "[", LineNo: line, ColNo: col}
 
-	case '[':
-		l.advance()
-		return Token{Type: TOKEN_LBRACKET, Value: "[", LineNo: lineNo, ColNo: colNo}
-
-	case ']':
-		l.advance()
-		return Token{Type: TOKEN_RBRACKET, Value: "]", LineNo: lineNo, ColNo: colNo}
+	case c == ']':
+		l.eat()
+		return Token{Type: TOKEN_RBRACKET, Value: "]", LineNo: line, ColNo: col}
 
 	default:
-		if unicode.IsDigit(l.current) {
-			num := l.readNumber()
-			return Token{Type: TOKEN_NUMBER, Value: num, LineNo: lineNo, ColNo: colNo}
-		}
-		if isIdentifierStart(l.current) {
-			ident := l.readIdentifier()
-			if tt, ok := keywords[ident]; ok {
-				return Token{Type: tt, Value: ident, LineNo: lineNo, ColNo: colNo}
-			}
-			return Token{Type: TOKEN_IDENTIFIER, Value: ident, LineNo: lineNo, ColNo: colNo}
-		}
-		l.advance()
-		return Token{Type: TOKEN_IDENTIFIER, Value: string(l.current), LineNo: lineNo, ColNo: colNo}
+		l.eat()
+		return l.NextToken()
 	}
-
-	l.advance()
-	return Token{Type: TOKEN_IDENTIFIER, LineNo: lineNo, ColNo: colNo}
 }
 
-func isIdentifierStart(r rune) bool {
-	return unicode.IsLetter(r) || r == '_'
-}
-
-func isIdentifierChar(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
-}
-
-// Tokenize returns all tokens in the input
 func (l *Lexer) Tokenize() []Token {
-	var tokens []Token
+	var out []Token
 	for {
 		tok := l.NextToken()
-		tokens = append(tokens, tok)
+		out = append(out, tok)
 		if tok.Type == TOKEN_EOF {
 			break
 		}
 	}
-	return tokens
+	return out
+}
+
+func isIdentStart(r rune) bool {
+	return unicode.IsLetter(r) || r == '_'
 }

@@ -3,481 +3,527 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/fookiejs/fookie/pkg/ast"
+	"github.com/fookiejs/fookie/pkg/compiler"
+	"github.com/fookiejs/fookie/pkg/validator"
 	"github.com/google/uuid"
 )
 
-// Executor handles operation execution with status progression and external orchestration
 type Executor struct {
-	db           *sql.DB
-	schema       *ast.Schema
-	externalMgr  *ExternalManager
-	logger       Logger
-}
-
-// Logger interface for structured logging
-type Logger interface {
-	Info(msg string, args ...interface{})
-	Error(msg string, args ...interface{})
-	Warn(msg string, args ...interface{})
-}
-
-type ExternalCall struct {
-	Name      string
-	Input     map[string]ast.Expression
-	Timestamp time.Time
-}
-
-type ExecutionResult struct {
-	OperationID string
-	EntityID    string
-	Status      string
-	Output      map[string]interface{}
-	Errors      []string
-	Duration    time.Duration
-	ExternalCalls []ExternalCall
+	db      *sql.DB
+	schema  *ast.Schema
+	extMgr  *ExternalManager
+	sqlGen  *compiler.SQLGenerator
+	logger  Logger
 }
 
 func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 	return &Executor{
-		db:          db,
-		schema:      schema,
-		externalMgr: NewExternalManager(),
-		logger:      logger,
+		db:     db,
+		schema: schema,
+		extMgr: NewExternalManager(),
+		sqlGen: compiler.NewSQLGenerator(schema),
+		logger: logger,
 	}
 }
 
-// ExecuteCreate handles model creation with full lifecycle
-func (e *Executor) ExecuteCreate(ctx context.Context, modelName string, input map[string]interface{}) (*ExecutionResult, error) {
-	start := time.Now()
-	result := &ExecutionResult{
-		OperationID: uuid.New().String(),
-		EntityID:    uuid.New().String(),
-		Status:      "initiate",
-		Output:      make(map[string]interface{}),
-	}
+func (e *Executor) ExternalManager() *ExternalManager { return e.extMgr }
 
-	// Find model
-	model := e.findModel(modelName)
-	if model == nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("model %s not found", modelName))
-		return result, fmt.Errorf("model not found")
-	}
-
-	// Find create operation
-	createOp, ok := model.CRUD["create"]
-	if !ok {
-		result.Errors = append(result.Errors, "create operation not defined")
-		return result, fmt.Errorf("create operation not found")
-	}
-
-	// Create context
-	context := &ast.Context{
-		Input:         input,
-		Variables:     make(map[string]interface{}),
-		Principal:     make(map[string]interface{}),
-		Output:        make(map[string]interface{}),
-		TransactionID: result.OperationID,
-		Timestamp:     time.Now(),
-	}
-
-	// Execute role block (authentication, principal extraction)
-	if createOp.Role != nil {
-		e.logger.Info("Executing role block", "operation", "create", "model", modelName)
-		if err := e.executeBlock(ctx, createOp.Role, context, &result.ExternalCalls); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("role error: %v", err))
-			result.Status = "failed"
-			return result, err
-		}
-	}
-
-	// Execute rule block (validation)
-	if createOp.Rule != nil {
-		e.logger.Info("Executing rule block", "operation", "create", "model", modelName)
-		if err := e.executeBlock(ctx, createOp.Rule, context, &result.ExternalCalls); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("rule failed: %v", err))
-			result.Status = "failed"
-			return result, err
-		}
-	}
-
-	// Persist: Execute modify block and INSERT into DB
-	if createOp.Modify != nil {
-		e.logger.Info("Executing modify block and persisting", "operation", "create", "model", modelName)
-		if err := e.persistEntity(ctx, model, createOp.Modify, context); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("persist error: %v", err))
-			result.Status = "failed"
-			return result, err
-		}
-		result.Output = context.Output
-	}
-
-	// Queue async work: Effect block → outbox
-	if createOp.Effect != nil {
-		e.logger.Info("Queuing effect (async) work", "operation", "create", "model", modelName)
-		result.Status = "progress" // Transition to progress while effects are queued
-		if err := e.queueEffects(ctx, createOp.Effect, context); err != nil {
-			// Effect failures don't fail the operation, just log
-			result.Errors = append(result.Errors, fmt.Sprintf("effect error: %v", err))
-		}
-	}
-
-	// If no effects or all succeed, mark done
-	if createOp.Effect == nil || len(result.Errors) == 0 {
-		result.Status = "done"
-	}
-
-	result.Duration = time.Since(start)
-	return result, nil
-}
-
-// ExecuteRead retrieves entities with filtering and pagination
-func (e *Executor) ExecuteRead(ctx context.Context, modelName string, filters map[string]interface{}) ([]*ExecutionResult, error) {
-	model := e.findModel(modelName)
-	if model == nil {
-		return nil, fmt.Errorf("model not found")
-	}
-
-	readOp, ok := model.CRUD["read"]
-	if !ok {
-		return nil, fmt.Errorf("read operation not defined")
-	}
-
-	// Role block: auth
-	context := &ast.Context{
-		Variables: make(map[string]interface{}),
-		Principal: make(map[string]interface{}),
-	}
-
-	if readOp.Role != nil {
-		var calls []ExternalCall
-		if err := e.executeBlock(ctx, readOp.Role, context, &calls); err != nil {
-			return nil, fmt.Errorf("auth failed: %v", err)
-		}
-	}
-
-	// Build and execute SQL query
-	query := fmt.Sprintf("SELECT * FROM %s", toSnakeCase(modelName))
-	if readOp.Where != nil {
-		// TODO: compile WHERE conditions to SQL
-		query += " WHERE status != 'failed'"
-	}
-	if len(readOp.OrderBy) > 0 {
-		query += " ORDER BY"
-		for i, ob := range readOp.OrderBy {
-			if i > 0 {
-				query += ","
-			}
-			query += fmt.Sprintf(" %s", toSnakeCase(ob.Field))
-			if ob.Desc {
-				query += " DESC"
-			}
-		}
-	}
-	if readOp.Cursor != nil {
-		query += fmt.Sprintf(" LIMIT %d OFFSET %d", readOp.Cursor.Size, readOp.Cursor.Offset)
-	}
-
-	rows, err := e.db.QueryContext(ctx, query)
+func (e *Executor) Create(ctx context.Context, modelName string, input map[string]interface{}) (map[string]interface{}, error) {
+	op, model, err := e.resolveOp(modelName, "create")
 	if err != nil {
-		return nil, fmt.Errorf("query error: %v", err)
+		return nil, err
+	}
+
+	rc := newRunCtx(input)
+
+	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+		return nil, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+		return nil, fmt.Errorf("rule: %w", err)
+	}
+
+	row := map[string]interface{}{
+		"id":         uuid.New().String(),
+		"created_at": time.Now().UTC(),
+		"updated_at": time.Now().UTC(),
+		"status":     "initiate",
+	}
+	if op.Modify != nil {
+		for _, stmt := range op.Modify.Statements {
+			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
+				val, err := e.evalExpr(ctx, ma.Value, rc)
+				if err != nil {
+					return nil, fmt.Errorf("modify %s: %w", ma.Field, err)
+				}
+				row[ma.Field] = val
+			}
+		}
+	}
+
+	sqlStr, keyOrder := e.sqlGen.CompileInsert(model, row)
+	args := make([]interface{}, len(keyOrder))
+	for i, k := range keyOrder {
+		args[i] = row[k]
+	}
+
+	var id string
+	var createdAt time.Time
+	var status string
+	if err := e.db.QueryRowContext(ctx, sqlStr, args...).Scan(&id, &createdAt, &status); err != nil {
+		return nil, fmt.Errorf("insert: %w", err)
+	}
+
+	rc.output["id"] = id
+	rc.output["created_at"] = createdAt
+	rc.output["status"] = status
+	for k, v := range row {
+		rc.output[k] = v
+	}
+
+	if op.Effect != nil {
+		if err := e.queueEffects(ctx, op.Effect, modelName, id, rc); err != nil {
+			e.logger.Warn("effect queue failed", "err", err)
+		} else {
+			_, _ = e.db.ExecContext(ctx,
+				fmt.Sprintf("UPDATE %s SET status = 'progress', updated_at = NOW() WHERE id = $1", compiler.SnakeCase(modelName)),
+				id)
+			rc.output["status"] = "progress"
+		}
+	} else {
+		_, _ = e.db.ExecContext(ctx,
+			fmt.Sprintf("UPDATE %s SET status = 'done', updated_at = NOW() WHERE id = $1", compiler.SnakeCase(modelName)),
+			id)
+		rc.output["status"] = "done"
+	}
+
+	e.logger.Info("created", "model", modelName, "id", id)
+	return rc.output, nil
+}
+
+func (e *Executor) Read(ctx context.Context, modelName string, input map[string]interface{}) ([]map[string]interface{}, error) {
+	op, model, err := e.resolveOp(modelName, "read")
+	if err != nil {
+		return nil, err
+	}
+
+	rc := newRunCtx(input)
+
+	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+		return nil, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+		return nil, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileRead(model, op)
+	e.logger.Info("read query", "sql", sqlStr)
+
+	rows, err := e.db.QueryContext(ctx, sqlStr)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
 
-	var results []*ExecutionResult
-	for rows.Next() {
-		result := &ExecutionResult{
-			OperationID: uuid.New().String(),
-			Status:      "done",
-			Output:      make(map[string]interface{}),
-		}
-		// TODO: Scan rows into result.Output
-		results = append(results, result)
-	}
-
-	return results, nil
+	return scanRows(rows)
 }
 
-// ExecuteDelete (soft delete via status or deletedAt)
-func (e *Executor) ExecuteDelete(ctx context.Context, modelName string, entityID string) (*ExecutionResult, error) {
-	result := &ExecutionResult{
-		OperationID: uuid.New().String(),
-		EntityID:    entityID,
-		Status:      "done",
-	}
-
-	model := e.findModel(modelName)
-	if model == nil {
-		return nil, fmt.Errorf("model not found")
-	}
-
-	deleteOp, ok := model.CRUD["delete"]
-	if !ok {
-		return nil, fmt.Errorf("delete operation not defined")
-	}
-
-	// Soft delete: set deleted_at
-	query := fmt.Sprintf("UPDATE %s SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1", toSnakeCase(modelName))
-	_, err := e.db.ExecContext(ctx, query, entityID)
+func (e *Executor) Update(ctx context.Context, modelName string, id string, input map[string]interface{}) (map[string]interface{}, error) {
+	op, model, err := e.resolveOp(modelName, "update")
 	if err != nil {
-		result.Status = "failed"
-		return result, err
+		return nil, err
 	}
 
-	// Queue effects if defined
-	if deleteOp.Effect != nil {
-		context := &ast.Context{
-			Variables:     make(map[string]interface{}),
-			TransactionID: result.OperationID,
-		}
-		var calls []ExternalCall
-		if err := e.executeBlock(ctx, deleteOp.Effect, context, &calls); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("effect error: %v", err))
+	rc := newRunCtx(input)
+	rc.output["id"] = id
+
+	existing, err := e.fetchByID(ctx, modelName, id)
+	if err != nil {
+		return nil, fmt.Errorf("fetch existing: %w", err)
+	}
+	for k, v := range existing {
+		rc.output[k] = v
+	}
+
+	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+		return nil, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+		return nil, fmt.Errorf("rule: %w", err)
+	}
+
+	patch := map[string]interface{}{}
+	if op.Modify != nil {
+		for _, stmt := range op.Modify.Statements {
+			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
+				val, err := e.evalExpr(ctx, ma.Value, rc)
+				if err != nil {
+					return nil, fmt.Errorf("modify %s: %w", ma.Field, err)
+				}
+				patch[ma.Field] = val
+			}
 		}
 	}
 
-	return result, nil
+	if len(patch) == 0 {
+		return rc.output, nil
+	}
+
+	sqlStr, keyOrder := e.sqlGen.CompileUpdate(model, patch)
+	args := make([]interface{}, len(keyOrder)+1)
+	for i, k := range keyOrder {
+		args[i] = patch[k]
+	}
+	args[len(keyOrder)] = id
+
+	var updatedAt time.Time
+	var status string
+	if err := e.db.QueryRowContext(ctx, sqlStr, args...).Scan(&id, &updatedAt, &status); err != nil {
+		return nil, fmt.Errorf("update: %w", err)
+	}
+
+	rc.output["updated_at"] = updatedAt
+	rc.output["status"] = status
+	for k, v := range patch {
+		rc.output[k] = v
+	}
+
+	if op.Effect != nil {
+		if err := e.queueEffects(ctx, op.Effect, modelName, id, rc); err != nil {
+			e.logger.Warn("effect queue failed", "err", err)
+		}
+	}
+
+	return rc.output, nil
 }
 
-// executeBlock runs statements within a block (role, rule, modify, effect)
-func (e *Executor) executeBlock(ctx context.Context, block *ast.Block, context *ast.Context, calls *[]ExternalCall) error {
-	if block == nil {
-		return nil
+func (e *Executor) Delete(ctx context.Context, modelName string, id string, input map[string]interface{}) error {
+	op, model, err := e.resolveOp(modelName, "delete")
+	if err != nil {
+		return err
 	}
 
-	for _, stmt := range block.Statements {
-		switch s := stmt.(type) {
-		case *ast.Assignment:
-			// Execute assignment: x = ExternalCall(...) or x = read Model(...)
-			result, err := e.evaluateExpression(ctx, s.Value, context)
-			if err != nil {
-				return err
-			}
-			context.Variables[s.Name] = result
-			// Track external call if it is one
-			if extCall, ok := s.Value.(*ast.ExternalCall); ok {
-				*calls = append(*calls, ExternalCall{
-					Name:      extCall.Name,
-					Input:     extCall.Params,
-					Timestamp: time.Now(),
-				})
-			}
+	rc := newRunCtx(input)
 
-		case *ast.PredicateExpr:
-			// Evaluate predicate for validation
-			result, err := e.evaluateExpression(ctx, s.Expr, context)
-			if err != nil {
-				return err
-			}
-			// If predicate is false, fail
-			if boolVal, ok := result.(bool); ok && !boolVal {
-				return fmt.Errorf("predicate failed")
-			}
+	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+		return fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+		return fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileSoftDelete(model)
+	if _, err := e.db.ExecContext(ctx, sqlStr, id); err != nil {
+		return fmt.Errorf("soft-delete: %w", err)
+	}
+
+	if op.Effect != nil {
+		if err := e.queueEffects(ctx, op.Effect, modelName, id, rc); err != nil {
+			e.logger.Warn("effect queue failed", "err", err)
 		}
 	}
 
 	return nil
 }
 
-// evaluateExpression evaluates FSL expressions
-func (e *Executor) evaluateExpression(ctx context.Context, expr ast.Expression, context *ast.Context) (interface{}, error) {
+func (e *Executor) execBlock(ctx context.Context, block *ast.Block, rc *runCtx) error {
+	if block == nil {
+		return nil
+	}
+	for _, stmt := range block.Statements {
+		switch s := stmt.(type) {
+		case *ast.Assignment:
+			val, err := e.evalExpr(ctx, s.Value, rc)
+			if err != nil {
+				return fmt.Errorf("assign %s: %w", s.Name, err)
+			}
+			rc.vars[s.Name] = val
+
+		case *ast.PredicateExpr:
+			val, err := e.evalExpr(ctx, s.Expr, rc)
+			if err != nil {
+				return fmt.Errorf("predicate eval: %w", err)
+			}
+			if b, ok := val.(bool); ok && !b {
+				return fmt.Errorf("assertion failed")
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Executor) evalExpr(ctx context.Context, expr ast.Expression, rc *runCtx) (interface{}, error) {
 	switch ex := expr.(type) {
 	case *ast.Literal:
 		return ex.Value, nil
 
 	case *ast.FieldAccess:
-		obj := context.Variables[ex.Object]
-		if obj == nil {
-			obj = context.Input[ex.Object]
-		}
-		if obj == nil {
-			obj = context.Principal[ex.Object]
-		}
-		// Navigate fields
-		for _, field := range ex.Fields {
-			if m, ok := obj.(map[string]interface{}); ok {
-				obj = m[field]
-			}
-		}
-		return obj, nil
+		return rc.resolve(ex.Object, ex.Fields), nil
 
 	case *ast.ExternalCall:
-		// Call external service
-		// Evaluate param expressions to values
 		params := make(map[string]interface{})
 		for k, v := range ex.Params {
-			val, err := e.evaluateExpression(ctx, v, context)
+			val, err := e.evalExpr(ctx, v, rc)
 			if err != nil {
-				return nil, fmt.Errorf("failed to evaluate param %s: %v", k, err)
+				return nil, fmt.Errorf("param %s: %w", k, err)
 			}
 			params[k] = val
 		}
-
-		result, err := e.externalMgr.Call(ctx, ex.Name, params)
-		if err != nil {
-			return nil, fmt.Errorf("external %s failed: %v", ex.Name, err)
-		}
-		return result, nil
+		return e.extMgr.Call(ctx, ex.Name, params)
 
 	case *ast.BinaryOp:
-		left, err := e.evaluateExpression(ctx, ex.Left, context)
+		l, err := e.evalExpr(ctx, ex.Left, rc)
 		if err != nil {
 			return nil, err
 		}
-		right, err := e.evaluateExpression(ctx, ex.Right, context)
+		r, err := e.evalExpr(ctx, ex.Right, rc)
 		if err != nil {
 			return nil, err
 		}
-		return e.evaluateBinaryOp(left, ex.Op, right)
+		return evalBinary(l, ex.Op, r)
 
-	default:
-		return nil, fmt.Errorf("unsupported expression type")
+	case *ast.UnaryOp:
+		r, err := e.evalExpr(ctx, ex.Right, rc)
+		if err != nil {
+			return nil, err
+		}
+		if b, ok := r.(bool); ok {
+			return !b, nil
+		}
+		return nil, fmt.Errorf("unary ! requires bool")
+
+	case *ast.InExpr:
+		l, err := e.evalExpr(ctx, ex.Left, rc)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range ex.Values {
+			r, err := e.evalExpr(ctx, v, rc)
+			if err != nil {
+				return nil, err
+			}
+			if l == r {
+				return true, nil
+			}
+		}
+		return false, nil
+
+	case *ast.BuiltinCall:
+		fn, ok := validator.GetBuiltin(ex.Name)
+		if !ok {
+			return nil, fmt.Errorf("unknown builtin validator: %s", ex.Name)
+		}
+		args := make([]interface{}, len(ex.Args))
+		for i, arg := range ex.Args {
+			val, err := e.evalExpr(ctx, arg, rc)
+			if err != nil {
+				return nil, fmt.Errorf("builtin arg %d: %w", i, err)
+			}
+			args[i] = val
+		}
+		return fn(args...)
 	}
+	return nil, fmt.Errorf("unsupported expression: %T", expr)
 }
 
-// evaluateBinaryOp evaluates binary operations
-func (e *Executor) evaluateBinaryOp(left interface{}, op string, right interface{}) (interface{}, error) {
+func evalBinary(l interface{}, op string, r interface{}) (interface{}, error) {
 	switch op {
 	case "==":
-		return left == right, nil
+		return l == r, nil
 	case "!=":
-		return left != right, nil
-	case ">":
-		// Compare numbers
-		if l, ok := left.(float64); ok {
-			if r, ok := right.(float64); ok {
-				return l > r, nil
-			}
-		}
-		return false, fmt.Errorf("cannot compare types")
-	case "<":
-		if l, ok := left.(float64); ok {
-			if r, ok := right.(float64); ok {
-				return l < r, nil
-			}
-		}
-		return false, nil
-	case ">=":
-		if l, ok := left.(float64); ok {
-			if r, ok := right.(float64); ok {
-				return l >= r, nil
-			}
-		}
-		return false, nil
-	case "<=":
-		if l, ok := left.(float64); ok {
-			if r, ok := right.(float64); ok {
-				return l <= r, nil
-			}
-		}
-		return false, nil
+		return l != r, nil
 	case "&&":
-		if l, ok := left.(bool); ok {
-			if r, ok := right.(bool); ok {
-				return l && r, nil
-			}
-		}
-		return false, nil
+		lb, _ := l.(bool)
+		rb, _ := r.(bool)
+		return lb && rb, nil
 	case "||":
-		if l, ok := left.(bool); ok {
-			if r, ok := right.(bool); ok {
-				return l || r, nil
+		lb, _ := l.(bool)
+		rb, _ := r.(bool)
+		return lb || rb, nil
+	}
+
+	lf, lok := toFloat(l)
+	rf, rok := toFloat(r)
+	if !lok || !rok {
+		return nil, fmt.Errorf("numeric operator %s requires numbers, got %T and %T", op, l, r)
+	}
+	switch op {
+	case ">":
+		return lf > rf, nil
+	case ">=":
+		return lf >= rf, nil
+	case "<":
+		return lf < rf, nil
+	case "<=":
+		return lf <= rf, nil
+	case "+":
+		return lf + rf, nil
+	case "-":
+		return lf - rf, nil
+	case "*":
+		return lf * rf, nil
+	case "/":
+		if rf == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		return lf / rf, nil
+	}
+	return nil, fmt.Errorf("unknown operator: %s", op)
+}
+
+func toFloat(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case float32:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+func (e *Executor) fetchByID(ctx context.Context, modelName string, id string) (map[string]interface{}, error) {
+	table := compiler.SnakeCase(modelName)
+	rows, err := e.db.QueryContext(ctx,
+		fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND deleted_at IS NULL", table), id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results, err := scanRows(rows)
+	if err != nil || len(results) == 0 {
+		return nil, fmt.Errorf("%s %s not found", modelName, id)
+	}
+	return results[0], nil
+}
+
+func (e *Executor) queueEffects(ctx context.Context, block *ast.Block, entityType, entityID string, rc *runCtx) error {
+	for _, stmt := range block.Statements {
+		var extName string
+		var params map[string]interface{}
+
+		switch s := stmt.(type) {
+		case *ast.Assignment:
+			if call, ok := s.Value.(*ast.ExternalCall); ok {
+				extName = call.Name
+				params = evalParams(ctx, call.Params, e, rc)
+			}
+		case *ast.PredicateExpr:
+			if call, ok := s.Expr.(*ast.ExternalCall); ok {
+				extName = call.Name
+				params = evalParams(ctx, call.Params, e, rc)
 			}
 		}
-		return false, nil
+
+		if extName == "" {
+			continue
+		}
+
+		payload, _ := json.Marshal(params)
+		_, err := e.db.ExecContext(ctx, `
+			INSERT INTO outbox (entity_type, entity_id, external_name, payload)
+			VALUES ($1, $2, $3, $4)`,
+			entityType, entityID, extName, payload,
+		)
+		if err != nil {
+			return fmt.Errorf("queue %s: %w", extName, err)
+		}
+	}
+	return nil
+}
+
+func evalParams(ctx context.Context, rawParams map[string]ast.Expression, e *Executor, rc *runCtx) map[string]interface{} {
+	out := make(map[string]interface{})
+	for k, v := range rawParams {
+		val, _ := e.evalExpr(ctx, v, rc)
+		out[k] = val
+	}
+	return out
+}
+
+func (e *Executor) resolveOp(modelName, opType string) (*ast.Operation, *ast.Model, error) {
+	for _, m := range e.schema.Models {
+		if strings.EqualFold(m.Name, modelName) {
+			op, ok := m.CRUD[opType]
+			if !ok {
+				return nil, nil, fmt.Errorf("model %s has no %s operation", modelName, opType)
+			}
+			return op, m, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("model %s not found", modelName)
+}
+
+func scanRows(rows *sql.Rows) ([]map[string]interface{}, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range cols {
+			row[col] = vals[i]
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
+type runCtx struct {
+	input     map[string]interface{}
+	principal map[string]interface{}
+	output    map[string]interface{}
+	vars      map[string]interface{}
+}
+
+func newRunCtx(input map[string]interface{}) *runCtx {
+	return &runCtx{
+		input:     input,
+		principal: make(map[string]interface{}),
+		output:    make(map[string]interface{}),
+		vars:      make(map[string]interface{}),
+	}
+}
+
+func (rc *runCtx) resolve(object string, fields []string) interface{} {
+	var base interface{}
+	switch object {
+	case "input":
+		base = rc.input
+	case "principal":
+		base = rc.principal
+	case "output":
+		base = rc.output
 	default:
-		return nil, fmt.Errorf("unsupported operator: %s", op)
-	}
-}
-
-// persistEntity inserts entity into database from modify block
-func (e *Executor) persistEntity(ctx context.Context, model *ast.Model, modifyBlock *ast.Block, context *ast.Context) error {
-	// Set implicit fields
-	context.Output["id"] = uuid.New().String()
-	context.Output["created_at"] = time.Now()
-	context.Output["updated_at"] = time.Now()
-	context.Output["status"] = "initiate"
-
-	// Execute modify statements to populate output
-	var calls []ExternalCall
-	if err := e.executeBlock(ctx, modifyBlock, context, &calls); err != nil {
-		return err
+		base = rc.vars[object]
 	}
 
-	// Build INSERT statement
-	var cols, vals []string
-	var args []interface{}
-	argIndex := 1
-
-	for key, val := range context.Output {
-		cols = append(cols, toSnakeCase(key))
-		vals = append(vals, fmt.Sprintf("$%d", argIndex))
-		args = append(args, val)
-		argIndex++
-	}
-
-	tableName := toSnakeCase(model.Name)
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		tableName, joinStrings(cols, ", "), joinStrings(vals, ", "))
-
-	_, err := e.db.ExecContext(ctx, query, args...)
-	return err
-}
-
-// queueEffects adds effect operations to outbox for async processing
-func (e *Executor) queueEffects(ctx context.Context, effectBlock *ast.Block, context *ast.Context) error {
-	for _, stmt := range effectBlock.Statements {
-		if assign, ok := stmt.(*ast.Assignment); ok {
-			if extCall, ok := assign.Value.(*ast.ExternalCall); ok {
-				// Queue external call to outbox
-				query := `
-					INSERT INTO outbox (entity_type, entity_id, external_name, payload, status)
-					VALUES ($1, $2, $3, $4, 'pending')
-				`
-				_, err := e.db.ExecContext(ctx, query,
-					"Effect",
-					context.Output["id"],
-					extCall.Name,
-					extCall.Params)
-				if err != nil {
-					return fmt.Errorf("failed to queue effect: %v", err)
-				}
-			}
+	for _, f := range fields {
+		if m, ok := base.(map[string]interface{}); ok {
+			base = m[f]
+		} else {
+			return nil
 		}
 	}
-	return nil
-}
-
-func (e *Executor) findModel(name string) *ast.Model {
-	for _, model := range e.schema.Models {
-		if model.Name == name {
-			return model
-		}
-	}
-	return nil
-}
-
-func toSnakeCase(s string) string {
-	var result string
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result += "_"
-		}
-		result += string(r)
-	}
-	return result
-}
-
-func joinStrings(strs []string, sep string) string {
-	var result string
-	for i, s := range strs {
-		if i > 0 {
-			result += sep
-		}
-		result += s
-	}
-	return result
+	return base
 }
