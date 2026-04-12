@@ -1,0 +1,137 @@
+model Transaction {
+  use VerifyJwt
+  use Fraud
+
+  fields {
+    fromWalletId: Wallet
+    toWalletId: Wallet
+    amount: number
+    score: number
+  }
+
+  create {
+
+    role {
+    }
+
+    rule {
+      input.amount > 0
+      input.fromWalletId != input.toWalletId
+
+      fromWallet.userId == principal.userId
+      fromWallet.balance >= input.amount
+    }
+
+    modify {
+      fromWalletId = input.fromWalletId
+      toWalletId = input.toWalletId
+      amount = input.amount
+      score = check.score
+    }
+
+    effect {
+      create AuditLog({
+        user: principal.userId
+        action: "TRANSFER_CREATED"
+        data: { amount: input.amount }
+      })
+
+      SendNotification({
+        userId: principal.userId
+        message: "Transaction started"
+      })
+    }
+  }
+}
+
+model User {
+  fields {
+    email: string
+  }
+}
+
+model Wallet {
+  fields {
+    userId: User
+    balance: number
+    label: string
+  }
+}
+
+external JwtVerify {
+  input {
+    token: string
+  }
+
+  output {
+    userId: id
+  }
+}
+
+external ValidateJwt {
+  input {
+    token: string
+  }
+
+  output {
+    valid: boolean
+    userId: id
+    expiresAt: date
+    issuerOk: boolean
+  }
+}
+
+external ParseJwt {
+  input {
+    token: string
+  }
+
+  output {
+    userId: id
+    claims: json
+    expiresAt: date
+    issuedAt: date
+  }
+}
+
+external FraudCheck {
+  input {
+    userId: id
+    amount: number
+    fromWalletId: id
+    toWalletId: id
+  }
+
+  output {
+    allowed: boolean
+    score: number
+  }
+}
+
+module VerifyJwt {
+  role {
+    principal = JwtVerify({
+      token: input.token
+    })
+  }
+
+  rule {
+    jwtOk = ValidateJwt({
+      token: input.token
+    })
+
+    jwtOk.valid == true
+    jwtOk.issuerOk == true
+    principal.userId == jwtOk.userId
+  }
+
+  modify {
+    jwtParsed = ParseJwt({
+      token: input.token
+    })
+  }
+
+  effect {
+  }
+}
+
