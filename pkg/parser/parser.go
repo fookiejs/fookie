@@ -301,6 +301,14 @@ func (p *Parser) parseOperation(opType string) (*ast.Operation, error) {
 			}
 			op.Effect = b
 
+		case TOKEN_COMPENSATE:
+			p.eat()
+			b, err := p.parseBlock()
+			if err != nil {
+				return nil, err
+			}
+			op.Compensate = b
+
 		case TOKEN_WHERE:
 			p.eat()
 			w, err := p.parseWhereClause()
@@ -419,7 +427,7 @@ func isWordToken(t Token) bool {
 		TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX,
 		TOKEN_LOCK, TOKEN_SIZE, TOKEN_ASC, TOKEN_DESC, TOKEN_IN, TOKEN_NOT,
 		TOKEN_CREATE, TOKEN_READ, TOKEN_UPDATE, TOKEN_DELETE,
-		TOKEN_ROLE, TOKEN_RULE, TOKEN_MODIFY, TOKEN_EFFECT,
+		TOKEN_ROLE, TOKEN_RULE, TOKEN_MODIFY, TOKEN_EFFECT, TOKEN_COMPENSATE,
 		TOKEN_WHERE, TOKEN_ORDERBY, TOKEN_CURSOR, TOKEN_RETURN,
 		TOKEN_USE, TOKEN_FIELDS, TOKEN_INPUT, TOKEN_OUTPUT:
 		return true

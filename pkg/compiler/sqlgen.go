@@ -143,10 +143,15 @@ func (sg *SQLGenerator) outboxDDL() string {
   "retry_count" INT NOT NULL DEFAULT 0,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "processed_at" TIMESTAMPTZ,
-  "error_message" TEXT
+  "error_message" TEXT,
+  "saga_id" UUID,
+  "saga_step" INT NOT NULL DEFAULT 0,
+  "is_compensation" BOOLEAN NOT NULL DEFAULT FALSE,
+  "result_payload" JSONB
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON "outbox"("status");
-CREATE INDEX IF NOT EXISTS idx_outbox_entity ON "outbox"("entity_type", "entity_id");`
+CREATE INDEX IF NOT EXISTS idx_outbox_entity ON "outbox"("entity_type", "entity_id");
+CREATE INDEX IF NOT EXISTS idx_outbox_saga ON "outbox"("saga_id");`
 }
 
 func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string {

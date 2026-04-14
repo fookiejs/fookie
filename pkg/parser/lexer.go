@@ -22,6 +22,7 @@ const (
 	TOKEN_RULE
 	TOKEN_MODIFY
 	TOKEN_EFFECT
+	TOKEN_COMPENSATE
 
 	TOKEN_WHERE
 	TOKEN_ORDERBY
@@ -107,7 +108,8 @@ var keywords = map[string]TokenType{
 	"role":   TOKEN_ROLE,
 	"rule":   TOKEN_RULE,
 	"modify": TOKEN_MODIFY,
-	"effect": TOKEN_EFFECT,
+	"effect":     TOKEN_EFFECT,
+	"compensate": TOKEN_COMPENSATE,
 
 	"where":   TOKEN_WHERE,
 	"orderBy": TOKEN_ORDERBY,

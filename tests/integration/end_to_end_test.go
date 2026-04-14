@@ -131,7 +131,7 @@ func TestFraudCheckExternal(t *testing.T) {
 
 func TestOutboxProcessor(t *testing.T) {
 	manager := runtime.NewExternalManager()
-	processor := runtime.NewOutboxProcessor(manager)
+	processor := runtime.NewOutboxProcessor(manager, nil)
 
 	require.NotNil(t, processor)
 

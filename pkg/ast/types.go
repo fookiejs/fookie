@@ -51,8 +51,9 @@ type Operation struct {
 	Role    *Block
 	Rule    *Block
 	Modify  *Block
-	Effect  *Block
-	Where   *WhereClause
+	Effect     *Block
+	Compensate *Block
+	Where      *WhereClause
 	OrderBy []*OrderBy
 	Cursor  *Cursor
 	Select  []*SelectField

@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,9 +128,9 @@ func (em *ExternalManager) handleValidateToken(input map[string]interface{}) (ma
 	}
 
 	return map[string]interface{}{
-		"valid":    true,
-		"userId":   "user-123",
-		"issuer":   "fookie-auth",
+		"valid":     true,
+		"userId":    "user-123",
+		"issuer":    "fookie-auth",
 		"expiresAt": time.Now().Add(24 * time.Hour),
 	}, nil
 }
@@ -147,16 +150,28 @@ func (em *ExternalManager) handleFraudCheck(input map[string]interface{}) (map[s
 	}, nil
 }
 
+type outboxJob struct {
+	id           string
+	entityType   string
+	entityID     string
+	externalName string
+	payload      []byte
+	sagaID       sql.NullString
+	sagaStep     int
+	retryCount   int
+}
+
 type OutboxProcessor struct {
 	manager *ExternalManager
-	db      interface{}
+	db      *sql.DB
 	ticker  *time.Ticker
 	done    chan struct{}
 }
 
-func NewOutboxProcessor(manager *ExternalManager) *OutboxProcessor {
+func NewOutboxProcessor(manager *ExternalManager, db *sql.DB) *OutboxProcessor {
 	return &OutboxProcessor{
 		manager: manager,
+		db:      db,
 		done:    make(chan struct{}),
 	}
 }
@@ -181,6 +196,193 @@ func (op *OutboxProcessor) Stop() {
 }
 
 func (op *OutboxProcessor) processPending() {
+	if op.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	op.processForwardStep(ctx)
+	op.processCompensationStep(ctx)
+}
+
+func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
+	tx, err := op.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	var job outboxJob
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, entity_type, entity_id, external_name, payload, saga_id, saga_step, retry_count
+		FROM outbox
+		WHERE status = 'pending' AND is_compensation = FALSE AND retry_count < 3
+		ORDER BY created_at ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED
+	`).Scan(&job.id, &job.entityType, &job.entityID, &job.externalName, &job.payload,
+		&job.sagaID, &job.sagaStep, &job.retryCount)
+
+	if err == sql.ErrNoRows {
+		tx.Commit()
+		return
+	}
+	if err != nil {
+		return
+	}
+
+	var params map[string]interface{}
+	json.Unmarshal(job.payload, &params)
+
+	result, callErr := op.manager.Call(ctx, job.externalName, params)
+
+	if callErr == nil {
+		resultJSON, _ := json.Marshal(result)
+		tx.ExecContext(ctx, `
+			UPDATE outbox SET status='processed', processed_at=NOW(), result_payload=$1
+			WHERE id=$2`, resultJSON, job.id)
+		tx.Commit()
+		if job.sagaID.Valid {
+			op.checkSagaCompletion(ctx, job.sagaID.String, job.entityType, job.entityID)
+		}
+	} else {
+		newRetryCount := job.retryCount + 1
+		if newRetryCount >= 3 {
+			tx.ExecContext(ctx, `
+				UPDATE outbox SET status='failed', error_message=$1, retry_count=$2
+				WHERE id=$3`, callErr.Error(), newRetryCount, job.id)
+			tx.Commit()
+			if job.sagaID.Valid {
+				op.triggerCompensation(ctx, job.sagaID.String, job.sagaStep, job.entityType, job.entityID)
+			} else {
+				table := sagaSnake(job.entityType)
+				op.db.ExecContext(ctx, fmt.Sprintf(`UPDATE "%s" SET status='failed', updated_at=NOW() WHERE id=$1`, table), job.entityID)
+			}
+		} else {
+			tx.ExecContext(ctx, `
+				UPDATE outbox SET retry_count=$1, error_message=$2
+				WHERE id=$3`, newRetryCount, callErr.Error(), job.id)
+			tx.Commit()
+		}
+	}
+}
+
+func (op *OutboxProcessor) processCompensationStep(ctx context.Context) {
+	tx, err := op.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	var job outboxJob
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, entity_type, entity_id, external_name, payload, saga_id, saga_step, retry_count
+		FROM outbox
+		WHERE status = 'pending' AND is_compensation = TRUE
+		ORDER BY saga_step DESC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED
+	`).Scan(&job.id, &job.entityType, &job.entityID, &job.externalName, &job.payload,
+		&job.sagaID, &job.sagaStep, &job.retryCount)
+
+	if err == sql.ErrNoRows {
+		tx.Commit()
+		return
+	}
+	if err != nil {
+		return
+	}
+
+	var params map[string]interface{}
+	json.Unmarshal(job.payload, &params)
+
+	_, callErr := op.manager.Call(ctx, job.externalName, params)
+
+	if callErr == nil {
+		tx.ExecContext(ctx, `
+			UPDATE outbox SET status='compensated', processed_at=NOW()
+			WHERE id=$1`, job.id)
+		tx.Commit()
+		if job.sagaID.Valid {
+			op.checkCompensationCompletion(ctx, job.sagaID.String, job.entityType, job.entityID)
+		}
+	} else {
+		tx.ExecContext(ctx, `
+			UPDATE outbox SET status='failed', error_message=$1
+			WHERE id=$2`, callErr.Error(), job.id)
+		tx.Commit()
+		table := sagaSnake(job.entityType)
+		op.db.ExecContext(ctx, fmt.Sprintf(`UPDATE "%s" SET status='failed', updated_at=NOW() WHERE id=$1`, table), job.entityID)
+	}
+}
+
+func (op *OutboxProcessor) checkSagaCompletion(ctx context.Context, sagaID, entityType, entityID string) {
+	var remaining int
+	op.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM outbox
+		WHERE saga_id=$1 AND is_compensation=FALSE AND status NOT IN ('processed','cancelled')
+	`, sagaID).Scan(&remaining)
+
+	if remaining == 0 {
+		op.db.ExecContext(ctx, `
+			UPDATE outbox SET status='cancelled'
+			WHERE saga_id=$1 AND is_compensation=TRUE AND status='held'
+		`, sagaID)
+		table := sagaSnake(entityType)
+		op.db.ExecContext(ctx, fmt.Sprintf(`UPDATE "%s" SET status='done', updated_at=NOW() WHERE id=$1`, table), entityID)
+	}
+}
+
+func (op *OutboxProcessor) triggerCompensation(ctx context.Context, sagaID string, failedStep int, entityType, entityID string) {
+	op.db.ExecContext(ctx, `
+		UPDATE outbox SET status='cancelled'
+		WHERE saga_id=$1 AND is_compensation=TRUE AND saga_step >= $2 AND status='held'
+	`, sagaID, failedStep)
+
+	var count int
+	op.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM outbox
+		WHERE saga_id=$1 AND is_compensation=TRUE AND saga_step < $2 AND status='held'
+	`, sagaID, failedStep).Scan(&count)
+
+	table := sagaSnake(entityType)
+	if count > 0 {
+		op.db.ExecContext(ctx, `
+			UPDATE outbox SET status='pending'
+			WHERE saga_id=$1 AND is_compensation=TRUE AND saga_step < $2 AND status='held'
+		`, sagaID, failedStep)
+		op.db.ExecContext(ctx, fmt.Sprintf(`UPDATE "%s" SET status='compensating', updated_at=NOW() WHERE id=$1`, table), entityID)
+	} else {
+		op.db.ExecContext(ctx, fmt.Sprintf(`UPDATE "%s" SET status='failed', updated_at=NOW() WHERE id=$1`, table), entityID)
+	}
+}
+
+func (op *OutboxProcessor) checkCompensationCompletion(ctx context.Context, sagaID, entityType, entityID string) {
+	var remaining int
+	op.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM outbox
+		WHERE saga_id=$1 AND is_compensation=TRUE AND status='pending'
+	`, sagaID).Scan(&remaining)
+
+	if remaining == 0 {
+		table := sagaSnake(entityType)
+		op.db.ExecContext(ctx, fmt.Sprintf(`UPDATE "%s" SET status='compensated', updated_at=NOW() WHERE id=$1`, table), entityID)
+	}
+}
+
+func sagaSnake(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		if r >= 'A' && r <= 'Z' {
+			b.WriteByte(byte(r + 32))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 type EventEmitter struct {

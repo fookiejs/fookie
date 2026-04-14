@@ -1,0 +1,160 @@
+external ValidateIdentity {
+  input {
+    documentType: string
+    documentNumber: string
+  }
+  output {
+    valid: boolean
+    fullName: string
+    dateOfBirth: string
+  }
+}
+
+external SendWelcomeEmail {
+  input {
+    email: string
+    fullName: string
+  }
+  output {
+    sent: boolean
+    messageId: string
+  }
+}
+
+external MarkAccountFailed {
+  input {
+    accountId: string
+    reason: string
+  }
+  output {
+    marked: boolean
+  }
+}
+
+external GeoIPLookup {
+  input {
+    ip: string
+  }
+  output {
+    country: string
+    city: string
+  }
+}
+
+model Account {
+  fields {
+    email: email
+    phone: phone
+    registrationIp: ipaddress
+  }
+
+  create {
+    rule {
+      isEmail(input.email)
+      isIPv4(input.registrationIp)
+      isPrivateIP(input.registrationIp) == false
+    }
+
+    modify {
+      email = input.email
+      phone = input.phone
+      registrationIp = input.registrationIp
+    }
+  }
+}
+
+model Profile {
+  fields {
+    accountId: string
+    fullName: string
+    iban: iban
+    lat: number
+    lng: number
+  }
+
+  create {
+    rule {
+      isValidIBAN(input.iban)
+      getIBANCountry(input.iban) == "GB"
+      isValidCoordinate(input.lat, input.lng)
+    }
+
+    modify {
+      accountId = input.accountId
+      fullName = input.fullName
+      iban = input.iban
+      lat = input.lat
+      lng = input.lng
+    }
+  }
+}
+
+model KycVerification {
+  fields {
+    profileId: string
+    documentType: string
+    documentNumber: string
+  }
+
+  create {
+    rule {
+      input.documentType != ""
+      input.documentNumber != ""
+    }
+
+    modify {
+      profileId = input.profileId
+      documentType = input.documentType
+      documentNumber = input.documentNumber
+    }
+
+    effect {
+      ValidateIdentity({
+        documentType: input.documentType
+        documentNumber: input.documentNumber
+      })
+      SendWelcomeEmail({
+        email: input.email
+        fullName: input.fullName
+      })
+    }
+
+    compensate {
+      MarkAccountFailed({
+        accountId: input.profileId
+        reason: "kyc_validation_failed"
+      })
+    }
+  }
+
+  update {
+    rule {
+      output.status in ["pending", "progress"]
+      input.status in ["approved", "rejected"]
+    }
+
+    modify {
+      status = input.status
+    }
+  }
+}
+
+model VerificationLog {
+  fields {
+    kycId: string
+    event: string
+    details: string
+  }
+
+  create {
+    rule {
+      input.event != ""
+    }
+
+    modify {
+      kycId = input.kycId
+      event = input.event
+      details = input.details
+    }
+  }
+}

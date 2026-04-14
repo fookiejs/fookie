@@ -33,6 +33,7 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 }
 
 func (e *Executor) ExternalManager() *ExternalManager { return e.extMgr }
+func (e *Executor) DB() *sql.DB                       { return e.db }
 
 func (e *Executor) Create(ctx context.Context, modelName string, input map[string]interface{}) (map[string]interface{}, error) {
 	op, model, err := e.resolveOp(modelName, "create")
@@ -88,7 +89,7 @@ func (e *Executor) Create(ctx context.Context, modelName string, input map[strin
 	}
 
 	if op.Effect != nil {
-		if err := e.queueEffects(ctx, op.Effect, modelName, id, rc); err != nil {
+		if err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
 			e.logger.Warn("effect queue failed", "err", err)
 		} else {
 			_, _ = e.db.ExecContext(ctx,
@@ -195,7 +196,7 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, inpu
 	}
 
 	if op.Effect != nil {
-		if err := e.queueEffects(ctx, op.Effect, modelName, id, rc); err != nil {
+		if err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
 			e.logger.Warn("effect queue failed", "err", err)
 		}
 	}
@@ -224,7 +225,7 @@ func (e *Executor) Delete(ctx context.Context, modelName string, id string, inpu
 	}
 
 	if op.Effect != nil {
-		if err := e.queueEffects(ctx, op.Effect, modelName, id, rc); err != nil {
+		if err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
 			e.logger.Warn("effect queue failed", "err", err)
 		}
 	}
@@ -415,38 +416,57 @@ func (e *Executor) fetchByID(ctx context.Context, modelName string, id string) (
 	return results[0], nil
 }
 
-func (e *Executor) queueEffects(ctx context.Context, block *ast.Block, entityType, entityID string, rc *runCtx) error {
-	for _, stmt := range block.Statements {
-		var extName string
-		var params map[string]interface{}
-
-		switch s := stmt.(type) {
-		case *ast.Assignment:
-			if call, ok := s.Value.(*ast.ExternalCall); ok {
-				extName = call.Name
-				params = evalParams(ctx, call.Params, e, rc)
-			}
-		case *ast.PredicateExpr:
-			if call, ok := s.Expr.(*ast.ExternalCall); ok {
-				extName = call.Name
-				params = evalParams(ctx, call.Params, e, rc)
-			}
+func extractCall(stmt ast.Statement, ctx context.Context, e *Executor, rc *runCtx) (string, map[string]interface{}) {
+	switch s := stmt.(type) {
+	case *ast.Assignment:
+		if call, ok := s.Value.(*ast.ExternalCall); ok {
+			return call.Name, evalParams(ctx, call.Params, e, rc)
 		}
+	case *ast.PredicateExpr:
+		if call, ok := s.Expr.(*ast.ExternalCall); ok {
+			return call.Name, evalParams(ctx, call.Params, e, rc)
+		}
+	}
+	return "", nil
+}
 
+func (e *Executor) queueEffects(ctx context.Context, effect *ast.Block, compensate *ast.Block, entityType, entityID string, rc *runCtx) error {
+	sagaID := uuid.New().String()
+
+	for step, stmt := range effect.Statements {
+		extName, params := extractCall(stmt, ctx, e, rc)
 		if extName == "" {
 			continue
 		}
-
 		payload, _ := json.Marshal(params)
 		_, err := e.db.ExecContext(ctx, `
-			INSERT INTO outbox (entity_type, entity_id, external_name, payload)
-			VALUES ($1, $2, $3, $4)`,
-			entityType, entityID, extName, payload,
+			INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation)
+			VALUES ($1, $2, $3, $4, $5, $6, FALSE)`,
+			entityType, entityID, extName, payload, sagaID, step,
 		)
 		if err != nil {
 			return fmt.Errorf("queue %s: %w", extName, err)
 		}
 	}
+
+	if compensate != nil {
+		for step, stmt := range compensate.Statements {
+			extName, params := extractCall(stmt, ctx, e, rc)
+			if extName == "" {
+				continue
+			}
+			payload, _ := json.Marshal(params)
+			_, err := e.db.ExecContext(ctx, `
+				INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation, status)
+				VALUES ($1, $2, $3, $4, $5, $6, TRUE, 'held')`,
+				entityType, entityID, extName, payload, sagaID, step,
+			)
+			if err != nil {
+				return fmt.Errorf("queue compensation %s: %w", extName, err)
+			}
+		}
+	}
+
 	return nil
 }
 

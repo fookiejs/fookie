@@ -40,7 +40,7 @@ func main() {
 
 	externalMgr := runtime.NewExternalManager()
 
-	processor := runtime.NewOutboxProcessor(externalMgr)
+	processor := runtime.NewOutboxProcessor(externalMgr, db)
 	processor.Start(*pollInterval)
 
 	logger.Infof("Started outbox processor with %v poll interval", *pollInterval)
