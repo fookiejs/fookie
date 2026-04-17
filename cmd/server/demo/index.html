@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fookie — Demo</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d8bfd;
+      --ok: #3ecf8e;
+      --err: #f87171;
+      --font: system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.5;
+    }
+    header {
+      padding: 1.5rem 1.25rem;
+      border-bottom: 1px solid #2a3544;
+      background: var(--panel);
+    }
+    h1 { margin: 0; font-size: 1.35rem; font-weight: 600; }
+    p.lead { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.95rem; }
+    main { max-width: 52rem; margin: 0 auto; padding: 1.25rem; }
+    section {
+      background: var(--panel);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+      border: 1px solid #2a3544;
+    }
+    h2 { margin: 0 0 0.75rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input[type="text"] {
+      width: 100%;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid #3d4a5c;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 0.65rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+      padding: 0.55rem 1rem;
+      font-size: 0.9rem;
+      font-weight: 500;
+      background: var(--accent);
+      color: #fff;
+    }
+    button.secondary { background: #334155; color: var(--text); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    pre {
+      margin: 0.75rem 0 0;
+      padding: 0.75rem;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid #2a3544;
+      font-size: 0.78rem;
+      overflow: auto;
+      max-height: 280px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .status { font-size: 0.8rem; margin-top: 0.5rem; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Fookie demo</h1>
+    <p class="lead">
+      Sunucu açıkken bu sayfa <code>/graphql</code> ile konuşur. Önce Postgres, sonra
+      <code>go run ./cmd/server</code> (veya <code>make run-server</code>).
+    </p>
+  </header>
+  <main>
+    <section>
+      <h2>Bağlantı</h2>
+      <label for="base">API kökü (boş = aynı origin)</label>
+      <input id="base" type="text" value="" placeholder="örn. http://localhost:8080" />
+      <label for="token">Authorization Bearer (Transaction için; boş olamaz)</label>
+      <input id="token" type="text" value="demo-token" placeholder="demo-token" />
+    </section>
+
+    <section>
+      <h2>Hızlı işlemler</h2>
+      <div class="row">
+        <button type="button" id="btn-health">GET /health</button>
+        <button type="button" id="btn-seed" class="secondary">Örnek veri (2 kullanıcı + 2 cüzdan)</button>
+        <button type="button" id="btn-users" class="secondary">Kullanıcıları listele</button>
+      </div>
+      <p class="status" id="seed-hint"></p>
+    </section>
+
+    <section>
+      <h2>Transfer (GraphQL mutation)</h2>
+      <p style="margin:0 0 0.5rem; font-size:0.9rem; color:var(--muted);">
+        Önce “Örnek veri” ile cüzdan ID’leri oluşturulur. Tutarı değiştirip transferi dene.
+      </p>
+      <label for="amount">Tutar</label>
+      <input id="amount" type="text" value="42.5" />
+      <div class="row" style="margin-top:0.5rem;">
+        <button type="button" id="btn-tx">createTransaction</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Son yanıt</h2>
+      <pre id="out">Henüz istek yok.</pre>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const base = () => $("base").value.replace(/\/$/, "");
+    const gqlURL = () => base() + "/graphql";
+    const healthURL = () => base() + "/health";
+
+    let state = { walletA: null, walletB: null };
+
+    function log(msg, isErr) {
+      const el = $("out");
+      el.textContent = typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
+      const st = $("seed-hint");
+      if (isErr) { st.textContent = ""; st.className = "status err"; }
+    }
+
+    async function gql(query, variables) {
+      const tok = $("token").value.trim();
+      const body = { query };
+      if (variables) body.variables = variables;
+      const headers = { "Content-Type": "application/json" };
+      if (tok) headers["Authorization"] = "Bearer " + tok;
+      const r = await fetch(gqlURL(), { method: "POST", headers, body: JSON.stringify(body) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(JSON.stringify(j));
+      return j;
+    }
+
+    $("btn-health").onclick = async () => {
+      try {
+        const r = await fetch(healthURL());
+        const t = await r.text();
+        log({ status: r.status, body: t });
+      } catch (e) {
+        log(String(e), true);
+      }
+    };
+
+    $("btn-seed").onclick = async () => {
+      $("seed-hint").textContent = "Çalışıyor…";
+      $("seed-hint").className = "status";
+      try {
+        const q1 = `mutation { createUser(input: { email: "alice@demo.fookie.local", name: "Alice Demo" }) { id email name status } }`;
+        const q2 = `mutation { createUser(input: { email: "bob@demo.fookie.local", name: "Bob Demo" }) { id email name status } }`;
+        const a = await gql(q1);
+        const b = await gql(q2);
+        if (a.errors?.length) throw new Error(JSON.stringify(a.errors));
+        if (b.errors?.length) throw new Error(JSON.stringify(b.errors));
+        const idA = a.data.createUser.id;
+        const idB = b.data.createUser.id;
+
+        const wq = `
+          mutation($input: CreateWalletInput!) {
+            createWallet(input: $input) { id userId balance currency label status }
+          }`;
+        const wa = await gql(wq, {
+          input: { userId: idA, balance: 1000, currency: "USD", label: "Ana" },
+        });
+        const wb = await gql(wq, {
+          input: { userId: idB, balance: 50, currency: "USD", label: "Ana" },
+        });
+        if (wa.errors?.length) throw new Error(JSON.stringify(wa.errors));
+        if (wb.errors?.length) throw new Error(JSON.stringify(wb.errors));
+
+        state.walletA = wa.data.createWallet.id;
+        state.walletB = wb.data.createWallet.id;
+        $("seed-hint").textContent =
+          "Hazır: Alice cüzdan " + state.walletA.slice(0, 8) + "… → Bob cüzdan " + state.walletB.slice(0, 8) + "…";
+        $("seed-hint").className = "status ok";
+        log({ createUser: [a.data.createUser, b.data.createUser], wallets: [wa.data.createWallet, wb.data.createWallet] });
+      } catch (e) {
+        $("seed-hint").textContent = String(e);
+        $("seed-hint").className = "status err";
+        log(String(e), true);
+      }
+    };
+
+    $("btn-users").onclick = async () => {
+      try {
+        const r = await gql(`query { users { id email name status } }`);
+        log(r);
+      } catch (e) {
+        log(String(e), true);
+      }
+    };
+
+    $("btn-tx").onclick = async () => {
+      if (!state.walletA || !state.walletB) {
+        log("Önce «Örnek veri» ile cüzdan oluştur.", true);
+        return;
+      }
+      const amount = parseFloat($("amount").value, 10);
+      if (!(amount > 0)) {
+        log("Tutar pozitif bir sayı olmalı.", true);
+        return;
+      }
+      const tok = $("token").value.trim();
+      if (!tok) {
+        log("Transaction için Bearer token gir (Authorization’a eklenir).", true);
+        return;
+      }
+      try {
+        const mutation = `
+          mutation($input: CreateTransactionInput!) {
+            createTransaction(input: $input) {
+              id
+              status
+              fromWalletId
+              toWalletId
+              amount
+              currency
+            }
+          }`;
+        const variables = {
+          input: {
+            fromWalletId: state.walletA,
+            toWalletId: state.walletB,
+            amount,
+            currency: "USD",
+            riskScore: 0,
+            recipientEmail: "bob@demo.fookie.local",
+          },
+        };
+        const r = await gql(mutation, variables);
+        log(r);
+      } catch (e) {
+        log(String(e), true);
+      }
+    };
+  </script>
+</body>
+</html>

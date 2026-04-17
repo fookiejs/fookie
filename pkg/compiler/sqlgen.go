@@ -154,9 +154,8 @@ CREATE INDEX IF NOT EXISTS idx_outbox_entity ON "outbox"("entity_type", "entity_
 CREATE INDEX IF NOT EXISTS idx_outbox_saga ON "outbox"("saga_id");`
 }
 
-func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string {
+func (sg *SQLGenerator) readQueryPrefix(model *ast.Model, op *ast.Operation) string {
 	table := snake(model.Name)
-
 	projection := sg.buildProjection(op.Select)
 
 	var b strings.Builder
@@ -170,13 +169,19 @@ func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string 
 		}
 	}
 
+	return b.String()
+}
+
+func (sg *SQLGenerator) readQuerySuffix(model *ast.Model, op *ast.Operation) string {
+	var b strings.Builder
+
 	for i, ob := range op.OrderBy {
 		if i == 0 {
 			b.WriteString("\nORDER BY ")
 		} else {
 			b.WriteString(", ")
 		}
-		b.WriteString(snake(ob.Field))
+		b.WriteString(fmt.Sprintf("\"%s\"", snake(ob.Field)))
 		if ob.Desc {
 			b.WriteString(" DESC")
 		}
@@ -186,8 +191,20 @@ func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string 
 		b.WriteString(fmt.Sprintf("\nLIMIT %d", op.Cursor.Size))
 	}
 
-	b.WriteString(";")
 	return b.String()
+}
+
+func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string {
+	return sg.readQueryPrefix(model, op) + sg.readQuerySuffix(model, op) + ";"
+}
+
+func (sg *SQLGenerator) CompileReadWithFilter(model *ast.Model, op *ast.Operation, filterClause string) string {
+	q := sg.readQueryPrefix(model, op)
+	if filterClause != "" {
+		q += "\n  AND (" + filterClause + ")"
+	}
+	q += sg.readQuerySuffix(model, op) + ";"
+	return q
 }
 
 func (sg *SQLGenerator) buildProjection(fields []*ast.SelectField) string {

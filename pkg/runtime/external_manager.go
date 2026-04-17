@@ -114,6 +114,13 @@ func (em *ExternalManager) handleBuiltin(ctx context.Context, name string, input
 	case "FraudCheck":
 		return em.handleFraudCheck(input)
 
+	case "SendTransferNotification":
+		// Default stub so outbox/worker can complete without a real provider (dev & demo).
+		return map[string]interface{}{
+			"messageId": "stub",
+			"sent":      true,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown external: %s", name)
 	}

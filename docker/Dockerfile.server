@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -28,7 +28,7 @@ COPY --from=builder /app/server .
 # Default environment
 ENV DB_URL=postgres://localhost/fookie
 ENV PORT=:8080
-ENV SCHEMA_PATH=/app/schemas/main.fql
+ENV SCHEMA_PATH=/app/schemas/wallet_transfer.fql
 
 EXPOSE 8080
 

@@ -26,7 +26,7 @@ services:
     environment:
       DB_URL: postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable
       PORT: ":8080"
-      SCHEMA_PATH: schemas/transaction.fql
+      SCHEMA_PATH: schemas/wallet_transfer.fql
     ports:
       - "8080:8080"
     depends_on:
@@ -34,7 +34,7 @@ services:
         condition: service_healthy
     volumes:
       - ./schemas:/app/schemas:ro
-    command: /app/server -schema /app/schemas/transaction.fql -db postgres://fookie:fookie_dev@postgres:5432/fookie
+    command: /app/server -schema /app/schemas/wallet_transfer.fql -db postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable
 
   fookie-worker:
     build:

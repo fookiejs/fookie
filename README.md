@@ -5,9 +5,9 @@
 ## Quick Start
 
 ### Prerequisites
-- Go 1.21+
-- PostgreSQL 12+
-- Docker & Docker Compose (optional)
+- Go 1.25+ (see `go.mod`)
+- PostgreSQL 15+ (local install or Docker)
+- Docker Desktop (recommended for integration tests and `docker-compose`)
 
 ### Local Development
 
@@ -22,11 +22,15 @@ go mod download
 # Build tools
 make build
 
-# Start PostgreSQL
-docker-compose up -d postgres
+# Start PostgreSQL only (then run server/worker on the host)
+make postgres-up
+# Windows PowerShell alternative: .\scripts\dev-up.ps1
 
 # Run server
 make run-server
+
+# Demo web UI (GraphQL playground–style, Turkish copy)
+# Open http://localhost:8080/demo/ in a browser (same origin as the API).
 
 # In another terminal, run worker
 make run-worker
@@ -51,7 +55,7 @@ make docker-down
 ```
 fookie/
 ├── cmd/
-│   ├── server/      # HTTP API server
+│   ├── server/      # HTTP API server (embeds demo UI under /demo/)
 │   ├── worker/      # Async outbox worker
 │   └── parser/      # FSL parser CLI tool
 ├── pkg/
@@ -69,7 +73,7 @@ fookie/
 
 ### 1. Define Your Schema (FSL)
 
-Create `schemas/transaction.fql`:
+Create a schema file (see `schemas/wallet_transfer.fql` for a runnable example):
 
 ```fql
 external ValidateToken {
@@ -151,10 +155,20 @@ curl -X POST http://localhost:8080/operations \
 ## Testing
 
 ```bash
-# Run all tests
+# All Go tests (pkg + unit + integration; integration needs Docker for Testcontainers)
 make test
 
-# Run specific test suite
+# Fast loop: unit tests only (no Docker)
+make test-unit
+
+# Integration only (Docker must be running)
+make test-integration
+```
+
+CI runs the same split: unit job without containers, integration job with Docker on the runner. For a local stack, use `make postgres-up` and defaults in `cmd/server` / `cmd/worker` (or copy `.env.example`).
+
+```bash
+# Focused suites
 make test-parser    # Parser tests
 make test-compiler  # SQL code generation tests
 ```

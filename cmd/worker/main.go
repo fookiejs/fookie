@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	dbURL        = flag.String("db", "postgres://user:password@localhost/fookie", "Database connection string")
+	dbURL        = flag.String("db", "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable", "Database connection string")
 	pollInterval = flag.Duration("poll-interval", 5*time.Second, "Poll interval for outbox")
 )
 

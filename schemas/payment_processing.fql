@@ -70,10 +70,6 @@ model Merchant {
     }
 
     modify {
-      name = input.name
-      email = input.email
-      webhookUrl = input.webhookUrl
-      apiKey = input.apiKey
     }
   }
 }
@@ -93,10 +89,6 @@ model PaymentMethod {
     }
 
     modify {
-      merchantId = input.merchantId
-      type = input.type
-      value = input.value
-      holderName = input.holderName
     }
   }
 }
@@ -124,12 +116,6 @@ model PaymentRecord {
     }
 
     modify {
-      merchantId = input.merchantId
-      methodId = input.methodId
-      amount = input.amount
-      currency = input.currency
-      buyerEmail = input.buyerEmail
-      cardToken = input.cardToken
     }
 
     effect {
@@ -168,9 +154,6 @@ model Refund {
     }
 
     modify {
-      paymentId = input.paymentId
-      amount = input.amount
-      reason = input.reason
     }
   }
 }

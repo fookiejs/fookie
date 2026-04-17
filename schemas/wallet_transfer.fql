@@ -43,8 +43,6 @@ model User {
       isEmail(input.email)
     }
     modify {
-      email = input.email
-      name = input.name
       status = "active"
     }
   }
@@ -60,7 +58,6 @@ model User {
       output.id != null
     }
     modify {
-      name = input.name
     }
   }
 }
@@ -79,10 +76,6 @@ model Wallet {
       isISOCurrency(input.currency)
     }
     modify {
-      userId = input.userId
-      balance = input.balance
-      currency = input.currency
-      label = input.label
     }
   }
 
@@ -98,7 +91,6 @@ model Wallet {
       input.balance >= 0
     }
     modify {
-      balance = input.balance
     }
   }
 }
@@ -124,10 +116,6 @@ model Transaction {
     }
 
     modify {
-      fromWalletId = input.fromWalletId
-      toWalletId = input.toWalletId
-      amount = input.amount
-      currency = input.currency
       riskScore = 0
     }
 

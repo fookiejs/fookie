@@ -3,31 +3,32 @@ package main
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/fookiejs/fookie/pkg/parser"
-	"github.com/fookiejs/fookie/pkg/compiler"
-	"github.com/fookiejs/fookie/pkg/runtime"
 	"github.com/sirupsen/logrus"
+
+	"github.com/fookiejs/fookie/pkg/compiler"
+	fookiegql "github.com/fookiejs/fookie/pkg/graphql"
+	"github.com/fookiejs/fookie/pkg/parser"
+	"github.com/fookiejs/fookie/pkg/runtime"
 )
+
+//go:embed all:demo
+var demoRoot embed.FS
 
 var (
-	schemaPath = flag.String("schema", "schemas/main.fql", "Path to FSL schema file")
-	dbURL      = flag.String("db", "postgres://user:password@localhost/fookie", "Database connection string")
+	schemaPath = flag.String("schema", "schemas/wallet_transfer.fql", "Path to FSL schema file")
+	dbURL      = flag.String("db", "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable", "Database connection string")
 	port       = flag.String("port", ":8080", "Server port")
 )
-
-type Server struct {
-	db       *sql.DB
-	executor *runtime.Executor
-	logger   *logrus.Logger
-}
 
 func main() {
 	flag.Parse()
@@ -77,34 +78,32 @@ func main() {
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
 
-	srv := &Server{
-		db:       db,
-		executor: executor,
-		logger:   logger,
+	gqlSchema, err := fookiegql.BuildSchema(schema)
+	if err != nil {
+		log.Fatalf("Failed to build GraphQL schema: %v", err)
 	}
 
-	http.HandleFunc("/health", srv.handleHealth)
-	http.HandleFunc("/operations", srv.handleOperations)
-	http.HandleFunc("/models", srv.handleModels)
+	logger.Info("GraphQL schema built successfully")
+
+	http.HandleFunc("/health", handleHealth)
+	http.Handle("/graphql", fookiegql.NewHandler(executor, gqlSchema))
+
+	demoFS, err := fs.Sub(demoRoot, "demo")
+	if err != nil {
+		log.Fatalf("demo static files: %v", err)
+	}
+	http.HandleFunc("/demo", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/demo/", http.StatusSeeOther)
+	})
+	http.Handle("/demo/", http.StripPrefix("/demo/", http.FileServer(http.FS(demoFS))))
 
 	logger.Infof("Starting Fookie server on %s", *port)
+	logger.Infof("Demo UI: http://127.0.0.1%s/demo/", *port)
 	log.Fatal(http.ListenAndServe(*port, nil))
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"status":"ok"}`)
-}
-
-func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"operations":[]}`)
-}
-
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"models":[]}`)
 }

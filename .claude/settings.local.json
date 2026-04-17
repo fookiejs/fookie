@@ -10,7 +10,8 @@
       "Bash(git -C:*)",
       "Bash(go clean:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(grep -c \"--- PASS\")"
     ]
   }
 }

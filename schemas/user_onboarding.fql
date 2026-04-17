@@ -56,9 +56,6 @@ model Account {
     }
 
     modify {
-      email = input.email
-      phone = input.phone
-      registrationIp = input.registrationIp
     }
   }
 }
@@ -80,11 +77,6 @@ model Profile {
     }
 
     modify {
-      accountId = input.accountId
-      fullName = input.fullName
-      iban = input.iban
-      lat = input.lat
-      lng = input.lng
     }
   }
 }
@@ -103,9 +95,6 @@ model KycVerification {
     }
 
     modify {
-      profileId = input.profileId
-      documentType = input.documentType
-      documentNumber = input.documentNumber
     }
 
     effect {
@@ -152,9 +141,6 @@ model VerificationLog {
     }
 
     modify {
-      kycId = input.kycId
-      event = input.event
-      details = input.details
     }
   }
 }

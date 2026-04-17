@@ -34,6 +34,7 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 
 func (e *Executor) ExternalManager() *ExternalManager { return e.extMgr }
 func (e *Executor) DB() *sql.DB                       { return e.db }
+func (e *Executor) Schema() *ast.Schema               { return e.schema }
 
 func (e *Executor) Create(ctx context.Context, modelName string, input map[string]interface{}) (map[string]interface{}, error) {
 	op, model, err := e.resolveOp(modelName, "create")
@@ -55,6 +56,11 @@ func (e *Executor) Create(ctx context.Context, modelName string, input map[strin
 		"created_at": time.Now().UTC(),
 		"updated_at": time.Now().UTC(),
 		"status":     "initiate",
+	}
+	for _, field := range model.Fields {
+		if val, ok := rc.input[field.Name]; ok {
+			row[field.Name] = val
+		}
 	}
 	if op.Modify != nil {
 		for _, stmt := range op.Modify.Statements {
@@ -123,16 +129,111 @@ func (e *Executor) Read(ctx context.Context, modelName string, input map[string]
 		return nil, fmt.Errorf("rule: %w", err)
 	}
 
-	sqlStr := e.sqlGen.CompileRead(model, op)
+	frag := ""
+	args := []interface{}{}
+	if w, ok := input["where"].(map[string]interface{}); ok && len(w) > 0 {
+		var err error
+		frag, args, _, err = e.sqlGen.BuildWhereClause(model, w, 1)
+		if err != nil {
+			return nil, fmt.Errorf("where: %w", err)
+		}
+	}
+
+	sqlStr := e.sqlGen.CompileReadWithFilter(model, op, frag)
 	e.logger.Info("read query", "sql", sqlStr)
 
-	rows, err := e.db.QueryContext(ctx, sqlStr)
+	rows, err := e.db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
 
 	return scanRows(rows)
+}
+
+func (e *Executor) UpdateMany(ctx context.Context, modelName string, filter map[string]interface{}, input map[string]interface{}) (int64, error) {
+	op, model, err := e.resolveOp(modelName, "update")
+	if err != nil {
+		return 0, err
+	}
+	if op.Effect != nil || op.Compensate != nil {
+		return 0, fmt.Errorf("updateMany is not supported when the update operation defines effect or compensate blocks")
+	}
+
+	rc := newRunCtx(input)
+	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	patch := map[string]interface{}{}
+	for _, field := range model.Fields {
+		if val, ok := rc.input[field.Name]; ok {
+			patch[field.Name] = val
+		}
+	}
+	if op.Modify != nil {
+		for _, stmt := range op.Modify.Statements {
+			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
+				val, err := e.evalExpr(ctx, ma.Value, rc)
+				if err != nil {
+					return 0, fmt.Errorf("modify %s: %w", ma.Field, err)
+				}
+				patch[ma.Field] = val
+			}
+		}
+	}
+	if len(patch) == 0 {
+		return 0, fmt.Errorf("nothing to update")
+	}
+
+	sqlStr, args, err := e.sqlGen.CompileBulkUpdate(model, patch, filter)
+	if err != nil {
+		return 0, err
+	}
+	res, err := e.db.ExecContext(ctx, sqlStr, args...)
+	if err != nil {
+		return 0, fmt.Errorf("update many: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (e *Executor) DeleteMany(ctx context.Context, modelName string, filter map[string]interface{}, input map[string]interface{}) (int64, error) {
+	op, model, err := e.resolveOp(modelName, "delete")
+	if err != nil {
+		return 0, err
+	}
+	if op.Effect != nil || op.Compensate != nil {
+		return 0, fmt.Errorf("deleteMany is not supported when the delete operation defines effect or compensate blocks")
+	}
+
+	rc := newRunCtx(input)
+	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr, args, err := e.sqlGen.CompileBulkSoftDelete(model, filter)
+	if err != nil {
+		return 0, err
+	}
+	res, err := e.db.ExecContext(ctx, sqlStr, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete many: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (e *Executor) Update(ctx context.Context, modelName string, id string, input map[string]interface{}) (map[string]interface{}, error) {
@@ -160,6 +261,11 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, inpu
 	}
 
 	patch := map[string]interface{}{}
+	for _, field := range model.Fields {
+		if val, ok := rc.input[field.Name]; ok {
+			patch[field.Name] = val
+		}
+	}
 	if op.Modify != nil {
 		for _, stmt := range op.Modify.Statements {
 			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
@@ -284,7 +390,14 @@ func (e *Executor) evalExpr(ctx context.Context, expr ast.Expression, rc *runCtx
 			}
 			params[k] = val
 		}
-		return e.extMgr.Call(ctx, ex.Name, params)
+		result, err := e.extMgr.Call(ctx, ex.Name, params)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.validateExternalOutput(ex.Name, result); err != nil {
+			return nil, err
+		}
+		return result, nil
 
 	case *ast.BinaryOp:
 		l, err := e.evalExpr(ctx, ex.Left, rc)
@@ -554,4 +667,46 @@ func (rc *runCtx) resolve(object string, fields []string) interface{} {
 		}
 	}
 	return base
+}
+
+func (e *Executor) validateExternalOutput(name string, result map[string]interface{}) error {
+	for _, ext := range e.schema.Externals {
+		if ext.Name != name {
+			continue
+		}
+		for fieldName, fieldType := range ext.Output {
+			val, exists := result[fieldName]
+			if !exists {
+				continue
+			}
+			if err := checkType(val, fieldType); err != nil {
+				return fmt.Errorf("external %s.%s: %w", name, fieldName, err)
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+func checkType(val interface{}, typeName string) error {
+	if val == nil {
+		return fmt.Errorf("expected %s, got nil", typeName)
+	}
+	switch typeName {
+	case "string", "email", "url", "phone", "iban", "ipaddress", "color", "currency", "locale", "uuid", "id", "date", "timestamp":
+		if _, ok := val.(string); !ok {
+			return fmt.Errorf("expected %s (string), got %T", typeName, val)
+		}
+	case "number":
+		switch val.(type) {
+		case float64, int, int64, float32:
+		default:
+			return fmt.Errorf("expected number, got %T", typeName)
+		}
+	case "boolean":
+		if _, ok := val.(bool); !ok {
+			return fmt.Errorf("expected boolean, got %T", val)
+		}
+	}
+	return nil
 }

@@ -1,3 +1,6 @@
+# Incomplete / invalid as a standalone schema (object literals like `{ amount: ... }` are not FQL).
+# Use `wallet_transfer.fql` to run the server locally.
+
 model Transaction {
   use VerifyJwt
   use Fraud

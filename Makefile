@@ -1,26 +1,32 @@
-.PHONY: help build test run-server run-worker docker-up docker-down clean parser
+.PHONY: help build test test-unit test-integration run-server run-worker postgres-up postgres-down docker-up docker-down clean parser
 
 help:
 	@echo "Fookie Framework - Build Commands"
 	@echo ""
 	@echo "Development:"
-	@echo "  make build          - Build all binaries"
-	@echo "  make test           - Run all tests"
-	@echo "  make parser         - Build parser CLI tool"
+	@echo "  make build - Build all binaries"
+	@echo "  make test              - Run all Go tests (pkg + tests/*)"
+	@echo "  make test-unit         - Fast tests only (no Docker)"
+	@echo "  make test-integration  - Integration tests (requires Docker for Testcontainers)"
+	@echo "  make parser            - Build parser CLI tool"
+	@echo ""
+	@echo "Local database (Docker):"
+	@echo "  make postgres-up       - Start only PostgreSQL (then: make run-server)"
+	@echo "  make postgres-down     - Stop PostgreSQL container"
 	@echo ""
 	@echo "Running:"
-	@echo "  make run-server     - Run server locally (requires DB)"
-	@echo "  make run-worker     - Run worker locally (requires DB)"
+	@echo "  make run-server        - Run server locally (requires DB; see postgres-up)"
+	@echo "  make run-worker        - Run worker locally (requires DB)"
 	@echo ""
-	@echo "Docker:"
-	@echo "  make docker-up      - Start Docker containers (postgres, server, worker)"
-	@echo "  make docker-down    - Stop Docker containers"
-	@echo "  make docker-clean   - Remove containers and volumes"
+	@echo "Docker (full stack):"
+	@echo "  make docker-up         - Build images and start postgres + server + worker"
+	@echo "  make docker-down       - Stop Docker containers"
+	@echo "  make docker-clean      - Remove containers and volumes"
 	@echo ""
 	@echo "Utilities:"
-	@echo "  make lint           - Run linter"
-	@echo "  make fmt            - Format code"
-	@echo "  make clean          - Clean build artifacts"
+	@echo "  make lint              - Run linter"
+	@echo "  make fmt               - Format code"
+	@echo "  make clean             - Clean build artifacts"
 
 # Build targets
 build: build-server build-parser build-worker
@@ -37,14 +43,18 @@ build-worker:
 	@echo "Building worker..."
 	go build -o bin/worker ./cmd/worker
 
-# Test targets
+# Test targets (integration tests use Testcontainers — Docker must be running)
 test:
-	@echo "Running tests..."
-	go test -v -cover ./tests/...
+	@echo "Running all tests..."
+	go test -count=1 -v -cover ./pkg/... ./tests/...
 
 test-unit:
-	@echo "Running unit tests..."
-	go test -v -cover ./tests/unit/...
+	@echo "Running unit tests (no integration / no Docker required)..."
+	go test -count=1 -v -cover ./pkg/... ./tests/unit/...
+
+test-integration:
+	@echo "Running integration tests (Docker required)..."
+	go test -count=1 -v -timeout 30m ./tests/integration/...
 
 test-parser:
 	@echo "Testing parser..."
@@ -57,15 +67,23 @@ test-compiler:
 # Run targets
 run-server: build-server
 	@echo "Starting server..."
-	./bin/server -schema schemas/transaction.fql -db postgres://fookie:fookie_dev@localhost/fookie
+	./bin/server -schema schemas/wallet_transfer.fql -db "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
 
 run-worker: build-worker
 	@echo "Starting worker..."
-	./bin/worker -db postgres://fookie:fookie_dev@localhost/fookie
+	./bin/worker -db "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
+
+# Start only Postgres from docker-compose (matches default -db URL in cmd/server and cmd/worker)
+postgres-up:
+	docker-compose up -d postgres
+	@echo "Postgres ready at postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
+
+postgres-down:
+	docker-compose stop postgres
 
 run-parser: build-parser
-	@echo "Running parser on transaction.fql..."
-	./bin/parser -schema schemas/transaction.fql -sql
+	@echo "Running parser on wallet_transfer.fql..."
+	./bin/parser -schema schemas/wallet_transfer.fql -sql
 
 # Docker targets
 docker-build:
@@ -113,7 +131,7 @@ lint:
 # Utility targets
 generate-migrations:
 	@echo "Generating migrations from schema..."
-	./bin/parser -schema schemas/transaction.fql -sql > migrations/001_initial.sql
+	./bin/parser -schema schemas/wallet_transfer.fql -sql > migrations/001_initial.sql
 
 deps:
 	go mod download
