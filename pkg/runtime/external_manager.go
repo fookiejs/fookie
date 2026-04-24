@@ -12,6 +12,7 @@ import (
 
 	"github.com/fookiejs/fookie/pkg/ast"
 	"github.com/fookiejs/fookie/pkg/events"
+	"github.com/redis/go-redis/v9"
 )
 
 type Store interface {
@@ -266,6 +267,7 @@ type OutboxProcessor struct {
 	db      *sql.DB
 	ticker  *time.Ticker
 	done    chan struct{}
+	rdb     *redis.Client // optional: nil = poll mode
 }
 
 func NewOutboxProcessor(exec *Executor) *OutboxProcessor {
@@ -277,6 +279,25 @@ func NewOutboxProcessor(exec *Executor) *OutboxProcessor {
 	}
 }
 
+func NewOutboxProcessorWithRedis(exec *Executor, rdb *redis.Client) *OutboxProcessor {
+	return &OutboxProcessor{
+		manager: exec.ExternalManager(),
+		exec:    exec,
+		db:      exec.DB(),
+		done:    make(chan struct{}),
+		rdb:     rdb,
+	}
+}
+
+// NotifyNewOutboxItem pushes the outbox row ID to Redis so workers pick it up instantly.
+// Falls back silently if Redis not configured.
+func (op *OutboxProcessor) NotifyNewOutboxItem(id string) {
+	if op.rdb == nil {
+		return
+	}
+	op.rdb.LPush(context.Background(), "fookie:outbox:pending", id)
+}
+
 func (op *OutboxProcessor) systemUpdateEntity(ctx context.Context, modelName, id string, input map[string]interface{}) error {
 	if op.exec == nil {
 		return fmt.Errorf("executor is nil")
@@ -285,7 +306,13 @@ func (op *OutboxProcessor) systemUpdateEntity(ctx context.Context, modelName, id
 	return err
 }
 
+// Start begins processing. If Redis is configured, uses BLPOP (instant).
+// Otherwise falls back to ticker-based polling.
 func (op *OutboxProcessor) Start(interval time.Duration) {
+	if op.rdb != nil {
+		go op.runRedisMode()
+		return
+	}
 	op.ticker = time.NewTicker(interval)
 	go func() {
 		for {
@@ -298,6 +325,28 @@ func (op *OutboxProcessor) Start(interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// runRedisMode uses BLPOP for instant, zero-poll outbox consumption.
+func (op *OutboxProcessor) runRedisMode() {
+	ctx := context.Background()
+	for {
+		select {
+		case <-op.done:
+			return
+		default:
+		}
+
+		// BLPOP blocks until an item appears (or 2s timeout to check done channel)
+		blpopResult := op.rdb.BLPop(ctx, 2*time.Second, "fookie:outbox:pending")
+		if blpopResult.Err() != nil {
+			// timeout or transient error — check done and loop
+			continue
+		}
+
+		// Signal received — process pending items (any worker can process any item).
+		op.processPending()
+	}
 }
 
 func (op *OutboxProcessor) Stop() {

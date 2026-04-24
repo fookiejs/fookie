@@ -36,6 +36,7 @@ type Executor struct {
 	logSink       LogSink
 	roomBus       *events.RoomBus
 	roomNameCache map[string]string
+	outboxNotify  func() // optional: called after every outbox INSERT (for Redis wake-up)
 }
 
 func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
@@ -53,7 +54,13 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 	return e
 }
 
-func (e *Executor) SetLogSink(s LogSink) { e.logSink = s }
+func (e *Executor) SetLogSink(s LogSink)         { e.logSink = s }
+func (e *Executor) SetOutboxNotify(fn func())    { e.outboxNotify = fn }
+func (e *Executor) notifyOutbox()                {
+	if e.outboxNotify != nil {
+		e.outboxNotify()
+	}
+}
 
 func (e *Executor) rootRC(ctx context.Context, req map[string]interface{}, op, model string) (*runCtx, context.Context) {
 	rc := newRunCtx(req)
@@ -1225,6 +1232,7 @@ func (e *Executor) queueEffects(ctx context.Context, effect *ast.Block, compensa
 		if err != nil {
 			return false, fmt.Errorf("queue %s: %w", extName, err)
 		}
+		e.notifyOutbox()
 		queuedAsync = true
 	}
 

@@ -10,12 +10,18 @@ services:
       OTLP_ENDPOINT: otel-collector:4318
       FOOKEE_SERVICE_NAME: fookie-server
       LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+      # Redis: enables pub/sub room notify (multi-server safe) + instant outbox wake-up
+      REDIS_URL: redis://redis:6379
     ports:
+      # NOTE: static binding only works for a single replica.
+      # For --scale fookie-server=N, use: docker compose -f ... -f deploy/compose/scale.yml up
       - "8080:8080"
     volumes:
       - ../../demo/schema.fql:/app/schema/schema.fql:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -36,12 +42,16 @@ services:
       FOOKEE_SERVICE_NAME: fookie-worker
       LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
       METRICS_LISTEN: ":9091"
-    ports:
-      - "9091:9091"
+      # Redis: enables BLPOP mode — instant outbox distribution across N workers (no polling)
+      REDIS_URL: redis://redis:6379
+    # No static port binding: workers are scaled with --scale, port 9091 would conflict.
+    # Metrics are scraped internally by the observability stack via the container network.
     volumes:
       - ../../demo/schema.fql:/app/schema/schema.fql:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       otel-collector:
         condition: service_started

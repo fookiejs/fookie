@@ -2,19 +2,54 @@ server:
   image: fookie-server
   tag: latest
   pullPolicy: IfNotPresent
-  replicas: 1
+  replicas: 2
   service:
     type: ClusterIP
     port: 8080
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
 
 worker:
   image: fookie-worker
   tag: latest
   pullPolicy: IfNotPresent
-  replicas: 1
+  replicas: 2
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
 
 database:
   url: "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"
+
+# Redis — enable to unlock multi-server notify (pub/sub) + instant outbox (BLPOP).
+# When disabled, server/worker fall back to in-process notify and poll-based outbox.
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false  # set true for production
+  architecture: standalone
 
 observability:
   otlpEndpoint: "otel-collector:4318"

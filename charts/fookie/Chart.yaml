@@ -2,5 +2,11 @@ apiVersion: v2
 name: fookie
 description: Fookie server and worker with schema ConfigMap (Postgres external).
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
+
+dependencies:
+  - name: redis
+    version: "20.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

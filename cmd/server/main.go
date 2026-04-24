@@ -22,6 +22,7 @@ import (
 	"github.com/fookiejs/fookie/pkg/runtime"
 	schemamerge "github.com/fookiejs/fookie/pkg/schema"
 	"github.com/fookiejs/fookie/pkg/telemetry"
+	"github.com/redis/go-redis/v9"
 )
 
 func defaultSchemaPath() string {
@@ -115,7 +116,32 @@ func main() {
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
 
-	roomBus := events.NewRoomBus()
+	// Redis — optional. Set REDIS_URL env to enable multi-server notify + instant outbox.
+	var rdb *redis.Client
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		opts, err := redis.ParseURL(redisURL)
+		if err != nil {
+			logger.Warnf("Invalid REDIS_URL, running without Redis: %v", err)
+		} else {
+			rdb = redis.NewClient(opts)
+			if err := rdb.Ping(context.Background()).Err(); err != nil {
+				logger.Warnf("Redis ping failed, running without Redis: %v", err)
+				rdb = nil
+			} else {
+				logger.Infof("Redis connected: %s", redisURL)
+			}
+		}
+	}
+
+	var roomBus *events.RoomBus
+	if rdb != nil {
+		roomBus = events.NewRoomBusWithRedis(rdb)
+		go roomBus.StartRedisSubscriber(context.Background())
+		logger.Info("RoomBus: Redis pub/sub mode (multi-server notify enabled)")
+	} else {
+		roomBus = events.NewRoomBus()
+		logger.Info("RoomBus: local-only mode (single server)")
+	}
 	executor.SetRoomBus(roomBus)
 
 	bus := events.NewBus()
@@ -125,10 +151,17 @@ func main() {
 	handlers.Register(executor)
 	logger.Info("Simulation handlers registered")
 
-	proc := runtime.NewOutboxProcessor(executor)
+	var proc *runtime.OutboxProcessor
+	if rdb != nil {
+		proc = runtime.NewOutboxProcessorWithRedis(executor, rdb)
+		executor.SetOutboxNotify(func() { proc.NotifyNewOutboxItem("1") })
+		logger.Info("Outbox: Redis BLPOP mode (instant wake-up)")
+	} else {
+		proc = runtime.NewOutboxProcessor(executor)
+		logger.Info("Outbox: poll mode (10ms interval)")
+	}
 	proc.Start(10 * time.Millisecond)
 	defer proc.Stop()
-	logger.Info("Outbox worker started (10ms interval)")
 
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer seedCancel()

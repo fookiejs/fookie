@@ -18,6 +18,7 @@ import (
 	schemamerge "github.com/fookiejs/fookie/pkg/schema"
 	"github.com/fookiejs/fookie/pkg/telemetry"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 )
 
@@ -119,10 +120,30 @@ func main() {
 
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
-	processor := runtime.NewOutboxProcessor(executor)
-	processor.Start(*pollInterval)
 
-	logger.Infof("Outbox worker started (poll %v, schema %s)", *pollInterval, *schemaPath)
+	// Redis — optional. If REDIS_URL set, use BLPOP instead of polling.
+	var processor *runtime.OutboxProcessor
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		opts, err := redis.ParseURL(redisURL)
+		if err != nil {
+			logger.Warnf("Invalid REDIS_URL, falling back to poll mode: %v", err)
+			processor = runtime.NewOutboxProcessor(executor)
+			logger.Infof("Outbox worker started (poll %v)", *pollInterval)
+		} else {
+			rdb := redis.NewClient(opts)
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				logger.Warnf("Redis ping failed, falling back to poll mode: %v", err)
+				processor = runtime.NewOutboxProcessor(executor)
+			} else {
+				processor = runtime.NewOutboxProcessorWithRedis(executor, rdb)
+				logger.Infof("Outbox worker started (Redis BLPOP mode, schema %s)", *schemaPath)
+			}
+		}
+	} else {
+		processor = runtime.NewOutboxProcessor(executor)
+		logger.Infof("Outbox worker started (poll %v, schema %s)", *pollInterval, *schemaPath)
+	}
+	processor.Start(*pollInterval)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

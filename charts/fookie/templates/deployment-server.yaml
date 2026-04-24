@@ -6,7 +6,9 @@ metadata:
     {{- include "fookie.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
+  {{- if not .Values.server.autoscaling.enabled }}
   replicas: {{ .Values.server.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "fookie.selectorLabels" . | nindent 6 }}
@@ -37,6 +39,12 @@ spec:
               value: "{{ .Values.schema.mountPath }}/{{ .Values.schema.fileName }}"
             - name: OTLP_ENDPOINT
               value: {{ .Values.observability.otlpEndpoint | quote }}
+            {{- if .Values.redis.enabled }}
+            - name: REDIS_URL
+              value: "redis://{{ .Release.Name }}-redis-master:6379"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
           volumeMounts:
             - name: schema
               mountPath: {{ .Values.schema.mountPath }}
