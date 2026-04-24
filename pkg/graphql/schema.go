@@ -4,34 +4,37 @@ import (
 	"strings"
 
 	"github.com/fookiejs/fookie/pkg/ast"
-	"github.com/fookiejs/fookie/pkg/compiler"
+	"github.com/fookiejs/fookie/pkg/events"
 	"github.com/graphql-go/graphql"
 )
 
-func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
+func BuildSchema(schema *ast.Schema, eventBus *events.Bus, roomBus *events.RoomBus) (graphql.Schema, error) {
 	strF, numF, boolF, idF := buildScalarFilterInputs()
-	whereByModel := map[string]*graphql.InputObject{}
+	filterByModel := map[string]*graphql.InputObject{}
 	for _, model := range schema.Models {
-		whereByModel[model.Name] = buildModelWhereInput(model, strF, numF, boolF, idF)
+		filterByModel[model.Name] = buildModelFilterInput(model, strF, numF, boolF, idF)
 	}
 	batchPayload := buildBatchPayloadType()
+	cursorInput := buildCursorInputType()
 
-	objectTypes := buildObjectTypes(schema)
+	objectTypes := buildObjectTypes(schema, filterByModel, cursorInput)
 	aggregateTypes := buildAggregateTypes(schema)
 
 	queryFields := graphql.Fields{}
 	mutationFields := graphql.Fields{}
 
 	for _, model := range schema.Models {
-		wt := whereByModel[model.Name]
+		wt := filterByModel[model.Name]
+		modelSnake := toSnake(model.Name)
+
 		if op, ok := model.CRUD["read"]; ok {
-			fieldName := lcFirst(model.Name) + "s"
+			fieldName := "all_" + modelSnake
 			if isAggregateRead(op) {
 				if aggType, ok := aggregateTypes[model.Name]; ok {
 					queryFields[fieldName] = &graphql.Field{
 						Type: aggType,
 						Args: graphql.FieldConfigArgument{
-							"where": &graphql.ArgumentConfig{Type: wt},
+							"filter": &graphql.ArgumentConfig{Type: wt},
 						},
 						Resolve: resolveAggregateRead(model.Name),
 					}
@@ -41,7 +44,8 @@ func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
 					queryFields[fieldName] = &graphql.Field{
 						Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(objType))),
 						Args: graphql.FieldConfigArgument{
-							"where": &graphql.ArgumentConfig{Type: wt},
+							"filter": &graphql.ArgumentConfig{Type: wt},
+							"cursor": &graphql.ArgumentConfig{Type: cursorInput},
 						},
 						Resolve: resolveRead(model.Name),
 					}
@@ -50,13 +54,13 @@ func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
 		}
 
 		if op, ok := model.CRUD["create"]; ok {
-			inputType := buildCreateInput(model, op, schema)
+			bodyType := buildCreateBody(model, op, schema)
 			if objType, ok := objectTypes[model.Name]; ok {
-				mutationFields["create"+model.Name] = &graphql.Field{
+				mutationFields["create_"+modelSnake] = &graphql.Field{
 					Type: objType,
 					Args: graphql.FieldConfigArgument{
-						"input": &graphql.ArgumentConfig{
-							Type: graphql.NewNonNull(inputType),
+						"body": &graphql.ArgumentConfig{
+							Type: graphql.NewNonNull(bodyType),
 						},
 					},
 					Resolve: resolveCreate(model.Name),
@@ -65,28 +69,28 @@ func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
 		}
 
 		if op, ok := model.CRUD["update"]; ok {
-			inputType := buildUpdateInput(model, op, schema)
+			bodyType := buildUpdateBody(model, op, schema)
 			if objType, ok := objectTypes[model.Name]; ok {
-				mutationFields["update"+model.Name] = &graphql.Field{
+				mutationFields["update_"+modelSnake] = &graphql.Field{
 					Type: objType,
 					Args: graphql.FieldConfigArgument{
 						"id": &graphql.ArgumentConfig{
 							Type: graphql.NewNonNull(graphql.ID),
 						},
-						"input": &graphql.ArgumentConfig{
-							Type: graphql.NewNonNull(inputType),
+						"body": &graphql.ArgumentConfig{
+							Type: graphql.NewNonNull(bodyType),
 						},
 					},
 					Resolve: resolveUpdate(model.Name),
 				}
-				mutationFields["updateMany"+model.Name+"s"] = &graphql.Field{
+				mutationFields["update_many_"+modelSnake] = &graphql.Field{
 					Type: batchPayload,
 					Args: graphql.FieldConfigArgument{
-						"where": &graphql.ArgumentConfig{
+						"filter": &graphql.ArgumentConfig{
 							Type: graphql.NewNonNull(wt),
 						},
-						"input": &graphql.ArgumentConfig{
-							Type: graphql.NewNonNull(inputType),
+						"body": &graphql.ArgumentConfig{
+							Type: graphql.NewNonNull(bodyType),
 						},
 					},
 					Resolve: resolveUpdateMany(model.Name),
@@ -95,7 +99,7 @@ func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
 		}
 
 		if _, ok := model.CRUD["delete"]; ok {
-			mutationFields["delete"+model.Name] = &graphql.Field{
+			mutationFields["delete_"+modelSnake] = &graphql.Field{
 				Type: graphql.NewNonNull(graphql.Boolean),
 				Args: graphql.FieldConfigArgument{
 					"id": &graphql.ArgumentConfig{
@@ -104,14 +108,54 @@ func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
 				},
 				Resolve: resolveDelete(model.Name),
 			}
-			mutationFields["deleteMany"+model.Name+"s"] = &graphql.Field{
+			mutationFields["delete_many_"+modelSnake] = &graphql.Field{
 				Type: batchPayload,
 				Args: graphql.FieldConfigArgument{
-					"where": &graphql.ArgumentConfig{
+					"filter": &graphql.ArgumentConfig{
 						Type: graphql.NewNonNull(wt),
 					},
 				},
 				Resolve: resolveDeleteMany(model.Name),
+			}
+		}
+
+		// Aggregate operations: sum, count, avg, min, max
+		for opType, op := range model.CRUD {
+			if opType == "read" || opType == "create" || opType == "update" || opType == "delete" {
+				continue
+			}
+
+			// Build field name: sum_{model}_{field}, count_{model}, etc.
+			var fieldName string
+			if opType == "count" {
+				fieldName = opType + "_" + modelSnake
+			} else {
+				fieldName = opType + "_" + modelSnake + "_" + toSnake(op.Field)
+			}
+
+			// Create resolver based on operation type
+			var resolverFunc graphql.FieldResolveFn
+			switch opType {
+			case "sum":
+				resolverFunc = resolveSum(model.Name, op.Field)
+			case "count":
+				resolverFunc = resolveCount(model.Name)
+			case "avg":
+				resolverFunc = resolveAvg(model.Name, op.Field)
+			case "min":
+				resolverFunc = resolveMin(model.Name, op.Field)
+			case "max":
+				resolverFunc = resolveMax(model.Name, op.Field)
+			default:
+				continue
+			}
+
+			queryFields[fieldName] = &graphql.Field{
+				Type: graphql.Float,
+				Args: graphql.FieldConfigArgument{
+					"filter": &graphql.ArgumentConfig{Type: wt},
+				},
+				Resolve: resolverFunc,
 			}
 		}
 	}
@@ -144,24 +188,84 @@ func BuildSchema(schema *ast.Schema) (graphql.Schema, error) {
 		})
 	}
 
+	attachSubscriptions(&config, eventBus, roomBus)
+
 	return graphql.NewSchema(config)
 }
 
-func buildObjectTypes(schema *ast.Schema) map[string]*graphql.Object {
+func buildObjectTypes(schema *ast.Schema, filterByModel map[string]*graphql.InputObject, cursorInput *graphql.InputObject) map[string]*graphql.Object {
 	types := map[string]*graphql.Object{}
+
 	for _, model := range schema.Models {
-		fields := systemFields()
-		for _, f := range model.Fields {
-			snakeKey := compiler.SnakeCase(f.Name)
-			fields[f.Name] = &graphql.Field{
-				Type:    MapFieldType(f.Type),
-				Resolve: modelFieldResolver(f.Name),
-			}
-			_ = snakeKey
-		}
-		types[model.Name] = graphql.NewObject(graphql.ObjectConfig{
-			Name:   model.Name,
-			Fields: fields,
+		m := model
+		types[m.Name] = graphql.NewObject(graphql.ObjectConfig{
+			Name: m.Name,
+			Fields: (graphql.FieldsThunk)(func() graphql.Fields {
+				fields := systemFields()
+
+				for _, f := range m.Fields {
+					f := f
+					if f.Type == ast.TypeRelation && f.Relation != nil {
+
+						scalarKey := f.Name + "_id"
+						relName := *f.Relation
+						fields[scalarKey] = &graphql.Field{
+							Type:    graphql.ID,
+							Resolve: fieldResolver(scalarKey),
+						}
+						if relType, ok := types[relName]; ok {
+							fields[f.Name] = &graphql.Field{
+								Type:    relType,
+								Resolve: relatedObjectResolver(scalarKey, relName),
+							}
+						}
+					} else {
+						fields[f.Name] = &graphql.Field{
+							Type:    MapFieldType(f.Type),
+							Resolve: modelFieldResolver(f.Name),
+						}
+					}
+				}
+
+				for _, other := range schema.Models {
+					if other.Name == m.Name {
+						continue
+					}
+					if _, hasRead := other.CRUD["read"]; !hasRead {
+						continue
+					}
+					for _, of := range other.Fields {
+						if of.Type == ast.TypeRelation && of.Relation != nil && *of.Relation == m.Name {
+							of := of
+							other := other
+							childType, ok := types[other.Name]
+							if !ok {
+								continue
+							}
+							hasManyName := "all_" + toSnake(other.Name)
+
+							if _, exists := fields[hasManyName]; exists {
+								hasManyName = "all_" + toSnake(other.Name) + "_list"
+							}
+							wt := filterByModel[other.Name]
+							argCfg := graphql.FieldConfigArgument{
+								"cursor": &graphql.ArgumentConfig{Type: cursorInput},
+							}
+							if wt != nil {
+								argCfg["filter"] = &graphql.ArgumentConfig{Type: wt}
+							}
+							fields[hasManyName] = &graphql.Field{
+								Type:    graphql.NewList(graphql.NewNonNull(childType)),
+								Args:    argCfg,
+								Resolve: hasManyResolver(other.Name, of.Name+"_id"),
+							}
+							break
+						}
+					}
+				}
+
+				return fields
+			}),
 		})
 	}
 	return types
@@ -204,10 +308,17 @@ func isAggregateRead(op *ast.Operation) bool {
 	return false
 }
 
-func buildCreateInput(model *ast.Model, op *ast.Operation, schema *ast.Schema) *graphql.InputObject {
+func inputFieldName(f *ast.Field) string {
+	if f.Type == ast.TypeRelation {
+		return f.Name + "_id"
+	}
+	return f.Name
+}
+
+func buildCreateBody(model *ast.Model, op *ast.Operation, schema *ast.Schema) *graphql.InputObject {
 	fields := graphql.InputObjectConfigFieldMap{}
 	for _, f := range model.Fields {
-		fields[f.Name] = &graphql.InputObjectFieldConfig{
+		fields[inputFieldName(f)] = &graphql.InputObjectFieldConfig{
 			Type: graphql.NewNonNull(mapFieldTypeToInput(f.Type)),
 		}
 	}
@@ -217,16 +328,18 @@ func buildCreateInput(model *ast.Model, op *ast.Operation, schema *ast.Schema) *
 			Type: graphql.NewNonNull(extra.GQLType),
 		}
 	}
+
+	fields["admin_key"] = &graphql.InputObjectFieldConfig{Type: graphql.String}
 	return graphql.NewInputObject(graphql.InputObjectConfig{
-		Name:   "Create" + model.Name + "Input",
+		Name:   "Create" + model.Name + "Body",
 		Fields: fields,
 	})
 }
 
-func buildUpdateInput(model *ast.Model, op *ast.Operation, schema *ast.Schema) *graphql.InputObject {
+func buildUpdateBody(model *ast.Model, op *ast.Operation, schema *ast.Schema) *graphql.InputObject {
 	fields := graphql.InputObjectConfigFieldMap{}
 	for _, f := range model.Fields {
-		fields[f.Name] = &graphql.InputObjectFieldConfig{
+		fields[inputFieldName(f)] = &graphql.InputObjectFieldConfig{
 			Type: mapFieldTypeToInput(f.Type),
 		}
 	}
@@ -237,8 +350,9 @@ func buildUpdateInput(model *ast.Model, op *ast.Operation, schema *ast.Schema) *
 			Type: extra.GQLType,
 		}
 	}
+	fields["admin_key"] = &graphql.InputObjectFieldConfig{Type: graphql.String}
 	return graphql.NewInputObject(graphql.InputObjectConfig{
-		Name:   "Update" + model.Name + "Input",
+		Name:   "Update" + model.Name + "Body",
 		Fields: fields,
 	})
 }
@@ -248,4 +362,25 @@ func lcFirst(s string) string {
 		return s
 	}
 	return strings.ToLower(s[:1]) + s[1:]
+}
+
+func toSnake(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+	}
+	return strings.ToLower(b.String())
+}
+
+func buildCursorInputType() *graphql.InputObject {
+	return graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: "CursorInput",
+		Fields: graphql.InputObjectConfigFieldMap{
+			"size":  &graphql.InputObjectFieldConfig{Type: graphql.Int},
+			"after": &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		},
+	})
 }

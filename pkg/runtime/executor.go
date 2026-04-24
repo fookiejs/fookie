@@ -5,30 +5,163 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/fookiejs/fookie/pkg/ast"
 	"github.com/fookiejs/fookie/pkg/compiler"
+	"github.com/fookiejs/fookie/pkg/events"
+	"github.com/fookiejs/fookie/pkg/telemetry"
 	"github.com/fookiejs/fookie/pkg/validator"
 	"github.com/google/uuid"
 )
 
+type EventBus interface {
+	PublishCRUD(op, model, id string, payload map[string]interface{})
+}
+
 type Executor struct {
-	db      *sql.DB
-	schema  *ast.Schema
-	extMgr  *ExternalManager
-	sqlGen  *compiler.SQLGenerator
-	logger  Logger
+	db            *sql.DB
+	schema        *ast.Schema
+	extMgr        *ExternalManager
+	sqlGen        *compiler.SQLGenerator
+	logger        Logger
+	bus           EventBus
+	logSink       LogSink
+	roomBus       *events.RoomBus
+	roomNameCache map[string]string
 }
 
 func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
-	return &Executor{
-		db:     db,
-		schema: schema,
-		extMgr: NewExternalManager(),
-		sqlGen: compiler.NewSQLGenerator(schema),
-		logger: logger,
+	extMgr := NewExternalManager()
+	e := &Executor{
+		db:            db,
+		schema:        schema,
+		extMgr:        extMgr,
+		sqlGen:        compiler.NewSQLGenerator(schema),
+		logger:        logger,
+		logSink:       NewSink(),
+		roomNameCache: make(map[string]string),
+	}
+	extMgr.store = &StoreAdapter{e: e}
+	return e
+}
+
+func (e *Executor) SetLogSink(s LogSink) { e.logSink = s }
+
+func (e *Executor) rootRC(ctx context.Context, req map[string]interface{}, op, model string) (*runCtx, context.Context) {
+	rc := newRunCtx(req)
+	rc.operation = op
+	rc.modelName = model
+	if existing := RootRequestIDFromCtx(ctx); existing != "" {
+		rc.rootRequestID = existing
+		rc.depth = rootDepthFromCtx(ctx) + 1
+	} else {
+		rc.rootRequestID = newRootRequestID(ctx)
+		rc.depth = 0
+	}
+	ctx = withRootRequest(ctx, rc.rootRequestID, rc.depth)
+	return rc, ctx
+}
+
+func (e *Executor) emitLog(ctx context.Context, rc *runCtx, level, msg string, fields map[string]interface{}, lineNo int, source string) {
+	entry := LogEntry{
+		Timestamp: time.Now(),
+		Level:     level,
+		Message:   msg,
+		Fields:    fields,
+		LineNo:    lineNo,
+		Source:    source,
+	}
+	if rc != nil {
+		entry.RootRequestID = rc.rootRequestID
+		entry.Operation = rc.operation
+		entry.Model = rc.modelName
+		entry.Block = rc.blockType
+		entry.Depth = rc.depth
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		if sc.HasTraceID() {
+			entry.TraceID = sc.TraceID().String()
+		}
+		if sc.HasSpanID() {
+			entry.SpanID = sc.SpanID().String()
+		}
+	}
+	if span := trace.SpanFromContext(ctx); span != nil && span.SpanContext().IsValid() {
+		attrs := []attribute.KeyValue{
+			attribute.String("log.level", level),
+			attribute.String("log.source", source),
+			attribute.Int("log.depth", entry.Depth),
+		}
+		if entry.Operation != "" {
+			attrs = append(attrs, attribute.String("fookie.operation", entry.Operation))
+		}
+		if entry.Model != "" {
+			attrs = append(attrs, attribute.String("fookie.model", entry.Model))
+		}
+		if entry.Block != "" {
+			attrs = append(attrs, attribute.String("fookie.block", entry.Block))
+		}
+		if lineNo > 0 {
+			attrs = append(attrs, attribute.Int("fookie.fsl.line", lineNo))
+		}
+		for k, v := range fields {
+			attrs = append(attrs, attribute.String("log."+k, fmt.Sprintf("%v", v)))
+		}
+		span.AddEvent(msg, trace.WithAttributes(attrs...))
+	}
+	if e.logSink != nil {
+		e.logSink.Emit(entry)
+	}
+}
+
+func (e *Executor) emitRuntime(ctx context.Context, rc *runCtx, level, msg string, fields map[string]interface{}) {
+	e.emitLog(ctx, rc, level, msg, fields, 0, "runtime")
+}
+
+func (e *Executor) SetEventBus(bus EventBus) {
+	e.bus = bus
+}
+
+func (e *Executor) SetRoomBus(b *events.RoomBus) {
+	e.roomBus = b
+	e.extMgr.SetRoomBus(b)
+}
+
+func (e *Executor) RegisterRoomName(name, id string) {
+	e.roomNameCache[name] = id
+}
+
+func (e *Executor) roomIDByName(name string) (string, bool) {
+	id, ok := e.roomNameCache[name]
+	return id, ok
+}
+
+type StoreAdapter struct{ e *Executor }
+
+func (s *StoreAdapter) Read(ctx context.Context, model string, args map[string]interface{}) ([]map[string]interface{}, error) {
+	return s.e.Read(ctx, model, args)
+}
+func (s *StoreAdapter) Create(ctx context.Context, model string, body map[string]interface{}) (map[string]interface{}, error) {
+	return s.e.Create(ctx, model, WithSystemInput(body))
+}
+func (s *StoreAdapter) Update(ctx context.Context, model string, id string, patch map[string]interface{}) (map[string]interface{}, error) {
+	return s.e.Update(ctx, model, id, WithSystemInput(patch))
+}
+func (s *StoreAdapter) Delete(ctx context.Context, model string, id string) error {
+	return s.e.Delete(ctx, model, id, WithSystemInput(map[string]interface{}{}))
+}
+
+func (e *Executor) emit(op, model, id string, payload map[string]interface{}) {
+	if e.bus != nil {
+		e.bus.PublishCRUD(op, model, id, payload)
 	}
 }
 
@@ -36,18 +169,71 @@ func (e *Executor) ExternalManager() *ExternalManager { return e.extMgr }
 func (e *Executor) DB() *sql.DB                       { return e.db }
 func (e *Executor) Schema() *ast.Schema               { return e.schema }
 
-func (e *Executor) Create(ctx context.Context, modelName string, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *Executor) InputKeyForDBColumn(modelName, dbColumn string) (string, error) {
+	_, model, err := e.resolveOp(modelName, "update")
+	if err != nil {
+		return "", err
+	}
+	for _, f := range model.Fields {
+		_, dbKey := fieldKeys(f)
+		if dbKey == dbColumn {
+			inKey, _ := fieldKeys(f)
+			return inKey, nil
+		}
+	}
+	if dbColumn == "status" {
+		return "status", nil
+	}
+	return "", fmt.Errorf("column %q is not a declared field of model %s (and not status)", dbColumn, modelName)
+}
+
+func WithSystemBody(body map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{"body": body, "__system": true}
+}
+
+func WithSystemInput(body map[string]interface{}) map[string]interface{} {
+	return WithSystemBody(body)
+}
+
+func (e *Executor) Create(ctx context.Context, modelName string, req map[string]interface{}) (out map[string]interface{}, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.create "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "create", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "create")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "create"),
+	)
+
 	op, model, err := e.resolveOp(modelName, "create")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
-	rc := newRunCtx(input)
+	rc, ctx := e.rootRC(ctx, req, "create", modelName)
+	pay := rc.payload()
 
-	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	ctx = withTx(ctx, tx)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
 		return nil, fmt.Errorf("role: %w", err)
 	}
-	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
 		return nil, fmt.Errorf("rule: %w", err)
 	}
 
@@ -58,132 +244,326 @@ func (e *Executor) Create(ctx context.Context, modelName string, input map[strin
 		"status":     "initiate",
 	}
 	for _, field := range model.Fields {
-		if val, ok := rc.input[field.Name]; ok {
-			row[field.Name] = val
+		inKey, dbKey := fieldKeys(field)
+		if val, ok := pay[inKey]; ok {
+			row[dbKey] = val
 		}
 	}
+
 	if op.Modify != nil {
+		mCtx, mSpan := telemetry.Tracer().Start(ctx, "fookie.modify")
+		prevBlock := rc.blockType
+		rc.blockType = "modify"
 		for _, stmt := range op.Modify.Statements {
-			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
-				val, err := e.evalExpr(ctx, ma.Value, rc)
+			switch s := stmt.(type) {
+			case *ast.ModifyAssignment:
+				val, err := e.evalExpr(mCtx, s.Value, rc)
 				if err != nil {
-					return nil, fmt.Errorf("modify %s: %w", ma.Field, err)
+					mSpan.RecordError(err)
+					mSpan.SetStatus(codes.Error, err.Error())
+					mSpan.End()
+					rc.blockType = prevBlock
+					return nil, fmt.Errorf("modify %s: %w", s.Field, err)
 				}
-				row[ma.Field] = val
+				row[resolveDBKey(s.Field, model)] = val
+			case *ast.PredicateExpr:
+				if _, err := e.evalExpr(mCtx, s.Expr, rc); err != nil {
+					mSpan.RecordError(err)
+					mSpan.SetStatus(codes.Error, err.Error())
+					mSpan.End()
+					rc.blockType = prevBlock
+					return nil, fmt.Errorf("modify stmt: %w", err)
+				}
 			}
 		}
+		rc.blockType = prevBlock
+		mSpan.End()
 	}
 
-	sqlStr, keyOrder := e.sqlGen.CompileInsert(model, row)
-	args := make([]interface{}, len(keyOrder))
-	for i, k := range keyOrder {
-		args[i] = row[k]
-	}
-
-	var id string
-	var createdAt time.Time
-	var status string
-	if err := e.db.QueryRowContext(ctx, sqlStr, args...).Scan(&id, &createdAt, &status); err != nil {
-		return nil, fmt.Errorf("insert: %w", err)
-	}
-
-	rc.output["id"] = id
-	rc.output["created_at"] = createdAt
-	rc.output["status"] = status
+	plannedID, _ := row["id"].(string)
+	rc.output["id"] = plannedID
+	rc.vars["id"] = plannedID
 	for k, v := range row {
 		rc.output[k] = v
 	}
 
 	if op.Effect != nil {
-		if err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
-			e.logger.Warn("effect queue failed", "err", err)
-		} else {
-			_, _ = e.db.ExecContext(ctx,
-				fmt.Sprintf("UPDATE %s SET status = 'progress', updated_at = NOW() WHERE id = $1", compiler.SnakeCase(modelName)),
-				id)
+		lockT, err := collectLockTargetsFromEffect(ctx, e, op.Effect, rc)
+		if err != nil {
+			return nil, fmt.Errorf("lock targets: %w", err)
+		}
+		pre, post := partitionCreateLockTargets(modelName, plannedID, lockT)
+		if err := e.acquireRowLocksGlobalOrder(ctx, pre); err != nil {
+			return nil, err
+		}
+
+		sqlStr, keyOrder := e.sqlGen.CompileInsert(model, row)
+		args := make([]interface{}, len(keyOrder))
+		for i, k := range keyOrder {
+			args[i] = row[k]
+		}
+
+		dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.insert")
+		dbSpan.SetAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", sqlStr),
+		)
+		var id string
+		var createdAt time.Time
+		var status string
+		if err := e.execer(ctx).QueryRowContext(dbCtx, sqlStr, args...).Scan(&id, &createdAt, &status); err != nil {
+			dbSpan.RecordError(err)
+			dbSpan.SetStatus(codes.Error, err.Error())
+			dbSpan.End()
+			return nil, fmt.Errorf("insert: %w", err)
+		}
+		dbSpan.End()
+
+		rc.output["id"] = id
+		rc.output["created_at"] = createdAt
+		rc.output["status"] = status
+		rc.vars["id"] = id
+		for k, v := range row {
+			rc.output[k] = v
+		}
+
+		if err := e.acquireRowLocksGlobalOrder(ctx, post); err != nil {
+			return nil, err
+		}
+
+		if err := e.runSyncEffectStatements(ctx, op.Effect, rc, id); err != nil {
+			return nil, fmt.Errorf("sync effect: %w", err)
+		}
+
+		queued, err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc)
+		if err != nil {
+			return nil, fmt.Errorf("queue effects: %w", err)
+		}
+		if queued {
+			if _, err := e.execer(ctx).ExecContext(ctx,
+				fmt.Sprintf(`UPDATE "%s" SET status = 'progress', updated_at = NOW() WHERE id = $1`, compiler.SnakeCase(modelName)),
+				id); err != nil {
+				return nil, fmt.Errorf("status progress: %w", err)
+			}
 			rc.output["status"] = "progress"
+		} else {
+			if _, err := e.execer(ctx).ExecContext(ctx,
+				fmt.Sprintf(`UPDATE "%s" SET status = 'done', updated_at = NOW() WHERE id = $1`, compiler.SnakeCase(modelName)),
+				id); err != nil {
+				return nil, fmt.Errorf("status done: %w", err)
+			}
+			rc.output["status"] = "done"
 		}
 	} else {
-		_, _ = e.db.ExecContext(ctx,
-			fmt.Sprintf("UPDATE %s SET status = 'done', updated_at = NOW() WHERE id = $1", compiler.SnakeCase(modelName)),
-			id)
+		sqlStr, keyOrder := e.sqlGen.CompileInsert(model, row)
+		args := make([]interface{}, len(keyOrder))
+		for i, k := range keyOrder {
+			args[i] = row[k]
+		}
+
+		dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.insert")
+		dbSpan.SetAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", sqlStr),
+		)
+		var id string
+		var createdAt time.Time
+		var status string
+		if err := e.execer(ctx).QueryRowContext(dbCtx, sqlStr, args...).Scan(&id, &createdAt, &status); err != nil {
+			dbSpan.RecordError(err)
+			dbSpan.SetStatus(codes.Error, err.Error())
+			dbSpan.End()
+			return nil, fmt.Errorf("insert: %w", err)
+		}
+		dbSpan.End()
+
+		rc.output["id"] = id
+		rc.output["created_at"] = createdAt
+		rc.output["status"] = status
+		rc.vars["id"] = id
+		for k, v := range row {
+			rc.output[k] = v
+		}
+
+		if _, err := e.execer(ctx).ExecContext(ctx,
+			fmt.Sprintf(`UPDATE "%s" SET status = 'done', updated_at = NOW() WHERE id = $1`, compiler.SnakeCase(modelName)),
+			id); err != nil {
+			return nil, fmt.Errorf("status done: %w", err)
+		}
 		rc.output["status"] = "done"
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	maskRestrictedFields(rc.output, model)
+
+	id, _ := rc.output["id"].(string)
+	e.emit("created", modelName, id, req)
 	e.logger.Info("created", "model", modelName, "id", id)
 	return rc.output, nil
 }
 
-func (e *Executor) Read(ctx context.Context, modelName string, input map[string]interface{}) ([]map[string]interface{}, error) {
+func (e *Executor) Read(ctx context.Context, modelName string, req map[string]interface{}) (result []map[string]interface{}, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.read "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "read", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "read")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "read"),
+	)
+
 	op, model, err := e.resolveOp(modelName, "read")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
-	rc := newRunCtx(input)
+	rc, ctx := e.rootRC(ctx, req, "read", modelName)
 
-	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
 		return nil, fmt.Errorf("role: %w", err)
 	}
-	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
 		return nil, fmt.Errorf("rule: %w", err)
 	}
 
 	frag := ""
 	args := []interface{}{}
-	if w, ok := input["where"].(map[string]interface{}); ok && len(w) > 0 {
+	if w, ok := req["filter"].(map[string]interface{}); ok && len(w) > 0 {
 		var err error
 		frag, args, _, err = e.sqlGen.BuildWhereClause(model, w, 1)
 		if err != nil {
-			return nil, fmt.Errorf("where: %w", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, fmt.Errorf("filter: %w", err)
 		}
 	}
 
-	sqlStr := e.sqlGen.CompileReadWithFilter(model, op, frag)
+	limit, offset := 0, 0
+	if c, ok := req["cursor"].(map[string]interface{}); ok {
+		limit = toInt(c["size"])
+		offset = toInt(c["after"])
+	}
+
+	sqlStr := e.sqlGen.CompileReadWithFilter(model, op, frag, limit, offset)
 	e.logger.Info("read query", "sql", sqlStr)
 
-	rows, err := e.db.QueryContext(ctx, sqlStr, args...)
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.select")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	rows, err := e.execer(ctx).QueryContext(dbCtx, sqlStr, args...)
 	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		dbSpan.End()
 		return nil, fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
+	result, err = scanRows(rows)
+	dbSpan.SetAttributes(attribute.Int("fookie.row_count", len(result)))
+	dbSpan.End()
+	if err != nil {
+		return nil, err
+	}
 
-	return scanRows(rows)
+	for _, row := range result {
+		maskRestrictedFields(row, model)
+	}
+
+	if !rc.isSystem {
+		e.emit("read", modelName, "", map[string]interface{}{"count": len(result)})
+	}
+	return result, nil
 }
 
-func (e *Executor) UpdateMany(ctx context.Context, modelName string, filter map[string]interface{}, input map[string]interface{}) (int64, error) {
+func (e *Executor) UpdateMany(ctx context.Context, modelName string, req map[string]interface{}) (n int64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.update_many "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "update_many", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "update_many")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "update_many"),
+	)
+
 	op, model, err := e.resolveOp(modelName, "update")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
 	if op.Effect != nil || op.Compensate != nil {
-		return 0, fmt.Errorf("updateMany is not supported when the update operation defines effect or compensate blocks")
+		err := fmt.Errorf("updateMany is not supported when the update operation defines effect or compensate blocks")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
 	}
 
-	rc := newRunCtx(input)
-	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+	filter, _ := req["filter"].(map[string]interface{})
+	rc, ctx := e.rootRC(ctx, req, "update", modelName)
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
 		return 0, fmt.Errorf("role: %w", err)
 	}
-	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
 		return 0, fmt.Errorf("rule: %w", err)
 	}
 
 	patch := map[string]interface{}{}
+	pay := rc.payload()
 	for _, field := range model.Fields {
-		if val, ok := rc.input[field.Name]; ok {
-			patch[field.Name] = val
+		inKey, dbKey := fieldKeys(field)
+		if val, ok := pay[inKey]; ok {
+			patch[dbKey] = val
 		}
 	}
 	if op.Modify != nil {
+		mCtx, mSpan := telemetry.Tracer().Start(ctx, "fookie.modify")
+		prevBlock := rc.blockType
+		rc.blockType = "modify"
 		for _, stmt := range op.Modify.Statements {
-			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
-				val, err := e.evalExpr(ctx, ma.Value, rc)
+			switch s := stmt.(type) {
+			case *ast.ModifyAssignment:
+				val, err := e.evalExpr(mCtx, s.Value, rc)
 				if err != nil {
-					return 0, fmt.Errorf("modify %s: %w", ma.Field, err)
+					mSpan.RecordError(err)
+					mSpan.SetStatus(codes.Error, err.Error())
+					mSpan.End()
+					rc.blockType = prevBlock
+					return 0, fmt.Errorf("modify %s: %w", s.Field, err)
 				}
-				patch[ma.Field] = val
+				patch[resolveDBKey(s.Field, model)] = val
+			case *ast.PredicateExpr:
+				if _, err := e.evalExpr(mCtx, s.Expr, rc); err != nil {
+					mSpan.RecordError(err)
+					mSpan.SetStatus(codes.Error, err.Error())
+					mSpan.End()
+					rc.blockType = prevBlock
+					return 0, fmt.Errorf("modify stmt: %w", err)
+				}
 			}
 		}
+		rc.blockType = prevBlock
+		mSpan.End()
 	}
 	if len(patch) == 0 {
 		return 0, fmt.Errorf("nothing to update")
@@ -191,95 +571,199 @@ func (e *Executor) UpdateMany(ctx context.Context, modelName string, filter map[
 
 	sqlStr, args, err := e.sqlGen.CompileBulkUpdate(model, patch, filter)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
-	res, err := e.db.ExecContext(ctx, sqlStr, args...)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.update")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	res, err := e.db.ExecContext(dbCtx, sqlStr, args...)
 	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		dbSpan.End()
 		return 0, fmt.Errorf("update many: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
+	n, _ = res.RowsAffected()
+	dbSpan.SetAttributes(attribute.Int64("fookie.rows_affected", n))
+	dbSpan.End()
 	return n, nil
 }
 
-func (e *Executor) DeleteMany(ctx context.Context, modelName string, filter map[string]interface{}, input map[string]interface{}) (int64, error) {
+func (e *Executor) DeleteMany(ctx context.Context, modelName string, req map[string]interface{}) (n int64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.delete_many "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "delete_many", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "delete_many")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "delete_many"),
+	)
+
 	op, model, err := e.resolveOp(modelName, "delete")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
 	if op.Effect != nil || op.Compensate != nil {
-		return 0, fmt.Errorf("deleteMany is not supported when the delete operation defines effect or compensate blocks")
+		err := fmt.Errorf("deleteMany is not supported when the delete operation defines effect or compensate blocks")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
 	}
 
-	rc := newRunCtx(input)
-	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+	filter, _ := req["filter"].(map[string]interface{})
+	rc, ctx := e.rootRC(ctx, req, "delete", modelName)
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
 		return 0, fmt.Errorf("role: %w", err)
 	}
-	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
 		return 0, fmt.Errorf("rule: %w", err)
 	}
 
 	sqlStr, args, err := e.sqlGen.CompileBulkSoftDelete(model, filter)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
-	res, err := e.db.ExecContext(ctx, sqlStr, args...)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.delete")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	res, err := e.db.ExecContext(dbCtx, sqlStr, args...)
 	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		dbSpan.End()
 		return 0, fmt.Errorf("delete many: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
+	n, _ = res.RowsAffected()
+	dbSpan.SetAttributes(attribute.Int64("fookie.rows_affected", n))
+	dbSpan.End()
 	return n, nil
 }
 
-func (e *Executor) Update(ctx context.Context, modelName string, id string, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *Executor) Update(ctx context.Context, modelName string, id string, req map[string]interface{}) (out map[string]interface{}, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.update "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "update", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "update")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "update"),
+		attribute.String("fookie.id", id),
+	)
+
 	op, model, err := e.resolveOp(modelName, "update")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
-	rc := newRunCtx(input)
+	rc, ctx := e.rootRC(ctx, req, "update", modelName)
 	rc.output["id"] = id
+
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	ctx = withTx(ctx, tx)
 
 	existing, err := e.fetchByID(ctx, modelName, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("fetch existing: %w", err)
 	}
 	for k, v := range existing {
 		rc.output[k] = v
 	}
 
-	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
 		return nil, fmt.Errorf("role: %w", err)
 	}
-	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
 		return nil, fmt.Errorf("rule: %w", err)
 	}
 
 	patch := map[string]interface{}{}
+	pay := rc.payload()
 	for _, field := range model.Fields {
-		if val, ok := rc.input[field.Name]; ok {
-			patch[field.Name] = val
+		inKey, dbKey := fieldKeys(field)
+		if val, ok := pay[inKey]; ok {
+			patch[dbKey] = val
 		}
 	}
 	if op.Modify != nil {
+		mCtx, mSpan := telemetry.Tracer().Start(ctx, "fookie.modify")
+		prevBlock := rc.blockType
+		rc.blockType = "modify"
 		for _, stmt := range op.Modify.Statements {
-			if ma, ok := stmt.(*ast.ModifyAssignment); ok {
-				val, err := e.evalExpr(ctx, ma.Value, rc)
+			switch s := stmt.(type) {
+			case *ast.ModifyAssignment:
+				val, err := e.evalExpr(mCtx, s.Value, rc)
 				if err != nil {
-					return nil, fmt.Errorf("modify %s: %w", ma.Field, err)
+					mSpan.RecordError(err)
+					mSpan.SetStatus(codes.Error, err.Error())
+					mSpan.End()
+					rc.blockType = prevBlock
+					return nil, fmt.Errorf("modify %s: %w", s.Field, err)
 				}
-				patch[ma.Field] = val
+				if val != nil {
+					patch[resolveDBKey(s.Field, model)] = val
+				}
+			case *ast.PredicateExpr:
+				if _, err := e.evalExpr(mCtx, s.Expr, rc); err != nil {
+					mSpan.RecordError(err)
+					mSpan.SetStatus(codes.Error, err.Error())
+					mSpan.End()
+					rc.blockType = prevBlock
+					return nil, fmt.Errorf("modify stmt: %w", err)
+				}
 			}
 		}
+		rc.blockType = prevBlock
+		mSpan.End()
 	}
 
 	if len(patch) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit: %w", err)
+		}
+		maskRestrictedFields(rc.output, model)
 		return rc.output, nil
+	}
+
+	allLocks, err := collectLockTargetsForEntityAndEffect(ctx, e, modelName, id, op.Effect, rc)
+	if err != nil {
+		return nil, fmt.Errorf("lock targets: %w", err)
+	}
+	if err := e.acquireRowLocksGlobalOrder(ctx, allLocks); err != nil {
+		return nil, err
 	}
 
 	sqlStr, keyOrder := e.sqlGen.CompileUpdate(model, patch)
@@ -289,11 +773,20 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, inpu
 	}
 	args[len(keyOrder)] = id
 
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.update")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
 	var updatedAt time.Time
 	var status string
-	if err := e.db.QueryRowContext(ctx, sqlStr, args...).Scan(&id, &updatedAt, &status); err != nil {
+	if err := e.execer(ctx).QueryRowContext(dbCtx, sqlStr, args...).Scan(&id, &updatedAt, &status); err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		dbSpan.End()
 		return nil, fmt.Errorf("update: %w", err)
 	}
+	dbSpan.End()
 
 	rc.output["updated_at"] = updatedAt
 	rc.output["status"] = status
@@ -302,52 +795,128 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, inpu
 	}
 
 	if op.Effect != nil {
-		if err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
-			e.logger.Warn("effect queue failed", "err", err)
+		if err := e.runSyncEffectStatements(ctx, op.Effect, rc, id); err != nil {
+			return nil, fmt.Errorf("sync effect: %w", err)
+		}
+		if _, err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
+			return nil, fmt.Errorf("queue effects: %w", err)
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	maskRestrictedFields(rc.output, model)
+
+	e.emit("updated", modelName, id, patch)
 	return rc.output, nil
 }
 
-func (e *Executor) Delete(ctx context.Context, modelName string, id string, input map[string]interface{}) error {
+func (e *Executor) Delete(ctx context.Context, modelName string, id string, req map[string]interface{}) (err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.delete "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "delete", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "delete")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "delete"),
+		attribute.String("fookie.id", id),
+	)
+
 	op, model, err := e.resolveOp(modelName, "delete")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
-	rc := newRunCtx(input)
+	rc, ctx := e.rootRC(ctx, req, "delete", modelName)
 
-	if err := e.execBlock(ctx, op.Role, rc); err != nil {
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	ctx = withTx(ctx, tx)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
 		return fmt.Errorf("role: %w", err)
 	}
-	if err := e.execBlock(ctx, op.Rule, rc); err != nil {
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
 		return fmt.Errorf("rule: %w", err)
 	}
 
-	sqlStr := e.sqlGen.CompileSoftDelete(model)
-	if _, err := e.db.ExecContext(ctx, sqlStr, id); err != nil {
-		return fmt.Errorf("soft-delete: %w", err)
+	allLocks, err := collectLockTargetsForEntityAndEffect(ctx, e, modelName, id, op.Effect, rc)
+	if err != nil {
+		return fmt.Errorf("lock targets: %w", err)
 	}
-
+	if err := e.acquireRowLocksGlobalOrder(ctx, allLocks); err != nil {
+		return err
+	}
 	if op.Effect != nil {
-		if err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
-			e.logger.Warn("effect queue failed", "err", err)
+		if err := e.runSyncEffectStatements(ctx, op.Effect, rc, id); err != nil {
+			return fmt.Errorf("sync effect: %w", err)
 		}
 	}
 
+	sqlStr := e.sqlGen.CompileSoftDelete(model)
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.delete")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	if _, err := e.execer(ctx).ExecContext(dbCtx, sqlStr, id); err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		dbSpan.End()
+		return fmt.Errorf("soft-delete: %w", err)
+	}
+	dbSpan.End()
+
+	if op.Effect != nil {
+		if _, err := e.queueEffects(ctx, op.Effect, op.Compensate, modelName, id, rc); err != nil {
+			return fmt.Errorf("queue effects: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	e.emit("deleted", modelName, id, map[string]interface{}{"id": id})
 	return nil
 }
 
-func (e *Executor) execBlock(ctx context.Context, block *ast.Block, rc *runCtx) error {
+func (e *Executor) execBlock(ctx context.Context, blockName string, block *ast.Block, rc *runCtx) error {
 	if block == nil {
 		return nil
 	}
+
+	if blockName == "role" && rc.isSystem {
+		return nil
+	}
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie."+blockName)
+	defer span.End()
+
+	prevBlock := rc.blockType
+	rc.blockType = blockName
+	defer func() { rc.blockType = prevBlock }()
+
 	for _, stmt := range block.Statements {
 		switch s := stmt.(type) {
 		case *ast.Assignment:
 			val, err := e.evalExpr(ctx, s.Value, rc)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				return fmt.Errorf("assign %s: %w", s.Name, err)
 			}
 			if s.Name == "principal" {
@@ -359,15 +928,45 @@ func (e *Executor) execBlock(ctx context.Context, block *ast.Block, rc *runCtx) 
 			} else {
 				rc.vars[s.Name] = val
 			}
+			if m, ok := val.(map[string]interface{}); ok {
+				ApplyHandlerSideEffects(ctx, e, m)
+			}
 
 		case *ast.PredicateExpr:
 			val, err := e.evalExpr(ctx, s.Expr, rc)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				return fmt.Errorf("predicate eval: %w", err)
 			}
-			if b, ok := val.(bool); ok && !b {
-				return fmt.Errorf("assertion failed")
+			if m, ok := val.(map[string]interface{}); ok {
+				ApplyHandlerSideEffects(ctx, e, m)
 			}
+			if b, ok := val.(bool); ok && !b {
+				err := fmt.Errorf("assertion failed")
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return err
+			}
+
+		case *ast.ForIn:
+			iterVal, err := e.evalExpr(ctx, s.Iterable, rc)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return fmt.Errorf("for-in iterable: %w", err)
+			}
+			items, err := iterableToSlice(iterVal)
+			if err != nil {
+				return err
+			}
+			for _, elem := range items {
+				rc.vars[s.Var] = elem
+				if err := e.execBlock(ctx, blockName, s.Body, rc); err != nil {
+					return err
+				}
+			}
+			delete(rc.vars, s.Var)
 		}
 	}
 	return nil
@@ -437,10 +1036,6 @@ func (e *Executor) evalExpr(ctx context.Context, expr ast.Expression, rc *runCtx
 		return false, nil
 
 	case *ast.BuiltinCall:
-		fn, ok := validator.GetBuiltin(ex.Name)
-		if !ok {
-			return nil, fmt.Errorf("unknown builtin validator: %s", ex.Name)
-		}
 		args := make([]interface{}, len(ex.Args))
 		for i, arg := range ex.Args {
 			val, err := e.evalExpr(ctx, arg, rc)
@@ -449,9 +1044,49 @@ func (e *Executor) evalExpr(ctx context.Context, expr ast.Expression, rc *runCtx
 			}
 			args[i] = val
 		}
+		if ex.Name == "log" {
+			msg, fields := buildLogPayload(args)
+			e.emitLog(ctx, rc, "info", msg, fields, ex.LineNo, "fsl")
+			return true, nil
+		}
+		fn, ok := validator.GetBuiltin(ex.Name)
+		if !ok {
+			return nil, fmt.Errorf("unknown builtin validator: %s", ex.Name)
+		}
 		return fn(args...)
+
+	case *ast.ArrayLiteral:
+		out := make([]interface{}, len(ex.Items))
+		for i, item := range ex.Items {
+			v, err := e.evalExpr(ctx, item, rc)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = v
+		}
+		return out, nil
 	}
 	return nil, fmt.Errorf("unsupported expression: %T", expr)
+}
+
+func iterableToSlice(v interface{}) ([]interface{}, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch t := v.(type) {
+	case []interface{}:
+		return t, nil
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, fmt.Errorf("for-in requires array or slice, got %T", v)
+	}
+	n := rv.Len()
+	out := make([]interface{}, n)
+	for i := 0; i < n; i++ {
+		out[i] = rv.Index(i).Interface()
+	}
+	return out, nil
 }
 
 func evalBinary(l interface{}, op string, r interface{}) (interface{}, error) {
@@ -507,16 +1142,26 @@ func toFloat(v interface{}) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case int32:
+		return float64(n), true
 	case float32:
 		return float64(n), true
+	case string:
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return f, true
+		}
+	case []byte:
+		if f, err := strconv.ParseFloat(string(n), 64); err == nil {
+			return f, true
+		}
 	}
 	return 0, false
 }
 
 func (e *Executor) fetchByID(ctx context.Context, modelName string, id string) (map[string]interface{}, error) {
 	table := compiler.SnakeCase(modelName)
-	rows, err := e.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND deleted_at IS NULL", table), id)
+	rows, err := e.execer(ctx).QueryContext(ctx,
+		fmt.Sprintf(`SELECT * FROM "%s" WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, table), id)
 	if err != nil {
 		return nil, err
 	}
@@ -529,58 +1174,80 @@ func (e *Executor) fetchByID(ctx context.Context, modelName string, id string) (
 	return results[0], nil
 }
 
-func extractCall(stmt ast.Statement, ctx context.Context, e *Executor, rc *runCtx) (string, map[string]interface{}) {
+func extractCall(stmt ast.Statement, ctx context.Context, e *Executor, rc *runCtx) (string, string, map[string]interface{}) {
 	switch s := stmt.(type) {
 	case *ast.Assignment:
 		if call, ok := s.Value.(*ast.ExternalCall); ok {
-			return call.Name, evalParams(ctx, call.Params, e, rc)
+			return call.Name, s.Name, evalParams(ctx, call.Params, e, rc)
 		}
 	case *ast.PredicateExpr:
 		if call, ok := s.Expr.(*ast.ExternalCall); ok {
-			return call.Name, evalParams(ctx, call.Params, e, rc)
+			return call.Name, "", evalParams(ctx, call.Params, e, rc)
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
-func (e *Executor) queueEffects(ctx context.Context, effect *ast.Block, compensate *ast.Block, entityType, entityID string, rc *runCtx) error {
+func (e *Executor) queueEffects(ctx context.Context, effect *ast.Block, compensate *ast.Block, entityType, entityID string, rc *runCtx) (queuedAsync bool, err error) {
 	sagaID := uuid.New().String()
 
 	for step, stmt := range effect.Statements {
-		extName, params := extractCall(stmt, ctx, e, rc)
+		extName, targetField, params := extractCall(stmt, ctx, e, rc)
 		if extName == "" {
 			continue
 		}
+
+		var runAfter *time.Time
+		var recurCron *string
+		if v, ok := params["run_after"]; ok {
+			if t := toTimeValue(v); t != nil {
+				runAfter = t
+			}
+			delete(params, "run_after")
+		}
+		if v, ok := params["recur_cron"]; ok {
+			if s, ok2 := v.(string); ok2 {
+				recurCron = &s
+			}
+			delete(params, "recur_cron")
+		}
+
 		payload, _ := json.Marshal(params)
-		_, err := e.db.ExecContext(ctx, `
-			INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation)
-			VALUES ($1, $2, $3, $4, $5, $6, FALSE)`,
-			entityType, entityID, extName, payload, sagaID, step,
+		var targetFieldVal interface{}
+		if targetField != "" {
+			targetFieldVal = targetField
+		}
+		_, err := e.execer(ctx).ExecContext(ctx, `
+			INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation, target_field, run_after, recur_cron, root_request_id)
+			VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, $8, $9, $10)`,
+			entityType, entityID, extName, payload, sagaID, step, targetFieldVal, runAfter, recurCron, rc.rootRequestID,
 		)
 		if err != nil {
-			return fmt.Errorf("queue %s: %w", extName, err)
+			return false, fmt.Errorf("queue %s: %w", extName, err)
 		}
+		queuedAsync = true
 	}
 
 	if compensate != nil {
 		for step, stmt := range compensate.Statements {
-			extName, params := extractCall(stmt, ctx, e, rc)
+			extName, _, params := extractCall(stmt, ctx, e, rc)
 			if extName == "" {
 				continue
 			}
 			payload, _ := json.Marshal(params)
-			_, err := e.db.ExecContext(ctx, `
-				INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation, status)
-				VALUES ($1, $2, $3, $4, $5, $6, TRUE, 'held')`,
-				entityType, entityID, extName, payload, sagaID, step,
+			_, err := e.execer(ctx).ExecContext(ctx, `
+				INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation, status, root_request_id)
+				VALUES ($1, $2, $3, $4, $5, $6, TRUE, 'held', $7)`,
+				entityType, entityID, extName, payload, sagaID, step, rc.rootRequestID,
 			)
 			if err != nil {
-				return fmt.Errorf("queue compensation %s: %w", extName, err)
+				return queuedAsync, fmt.Errorf("queue compensation %s: %w", extName, err)
 			}
+			queuedAsync = true
 		}
 	}
 
-	return nil
+	return queuedAsync, nil
 }
 
 func evalParams(ctx context.Context, rawParams map[string]ast.Expression, e *Executor, rc *runCtx) map[string]interface{} {
@@ -590,6 +1257,175 @@ func evalParams(ctx context.Context, rawParams map[string]ast.Expression, e *Exe
 		out[k] = val
 	}
 	return out
+}
+
+func syncEffectStatements(effect *ast.Block) []ast.Statement {
+	if effect == nil {
+		return nil
+	}
+	var out []ast.Statement
+	for _, s := range effect.Statements {
+		switch s.(type) {
+		case *ast.EffectUpdateStmt, *ast.EffectDeleteStmt, *ast.EffectNotifyStmt:
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (e *Executor) applyEffectUpdateRow(ctx context.Context, modelName, id string, fields []*ast.ModifyAssignment, rc *runCtx) error {
+	_, model, err := e.resolveOp(modelName, "update")
+	if err != nil {
+		return err
+	}
+
+	entityRC := rc
+	table := compiler.SnakeCase(modelName)
+	rows, qErr := e.execer(ctx).QueryContext(ctx,
+		fmt.Sprintf(`SELECT * FROM %q WHERE id = $1 AND "deleted_at" IS NULL`, table), id)
+	if qErr == nil {
+		if scanned, sErr := scanRows(rows); sErr == nil && len(scanned) > 0 {
+			child := &runCtx{
+				req:           rc.req,
+				body:          rc.body,
+				principal:     rc.principal,
+				output:        rc.output,
+				isSystem:      rc.isSystem,
+				rootRequestID: rc.rootRequestID,
+				operation:     rc.operation,
+				modelName:     rc.modelName,
+				blockType:     rc.blockType,
+				depth:         rc.depth,
+			}
+			child.vars = make(map[string]interface{}, len(rc.vars)+len(scanned[0]))
+			for k, v := range rc.vars {
+				child.vars[k] = v
+			}
+			for k, v := range scanned[0] {
+				child.vars[k] = v
+			}
+			entityRC = child
+		}
+		rows.Close()
+	}
+
+	patch := make(map[string]interface{}, len(fields))
+	for _, ma := range fields {
+		val, err := e.evalExpr(ctx, ma.Value, entityRC)
+		if err != nil {
+			return fmt.Errorf("effect update %s.%s: %w", modelName, ma.Field, err)
+		}
+		patch[resolveDBKey(ma.Field, model)] = val
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	sqlStr, keyOrder := e.sqlGen.CompileUpdate(model, patch)
+	args := make([]interface{}, len(keyOrder)+1)
+	for i, k := range keyOrder {
+		args[i] = patch[k]
+	}
+	args[len(keyOrder)] = id
+	var rid string
+	var updatedAt time.Time
+	var status string
+	if err := e.execer(ctx).QueryRowContext(ctx, sqlStr, args...).Scan(&rid, &updatedAt, &status); err != nil {
+		return fmt.Errorf("effect update %s %s: %w", modelName, id, err)
+	}
+	return nil
+}
+
+func (e *Executor) applyEffectSoftDeleteRow(ctx context.Context, modelName, id string) error {
+	_, model, err := e.resolveOp(modelName, "delete")
+	if err != nil {
+		return err
+	}
+	sqlStr := e.sqlGen.CompileSoftDelete(model)
+	if _, err := e.execer(ctx).ExecContext(ctx, sqlStr, id); err != nil {
+		return fmt.Errorf("effect delete %s %s: %w", modelName, id, err)
+	}
+	return nil
+}
+
+func (e *Executor) executeEffectStmtList(ctx context.Context, stmts []ast.Statement, rc *runCtx) error {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.EffectUpdateStmt:
+			idVal, err := e.evalExpr(ctx, s.IDExpr, rc)
+			if err != nil {
+				return fmt.Errorf("effect update %s id expr: %w", s.Model, err)
+			}
+			id, _ := idVal.(string)
+			if id == "" {
+				continue
+			}
+			if err := e.applyEffectUpdateRow(ctx, s.Model, id, s.Fields, rc); err != nil {
+				return err
+			}
+		case *ast.EffectDeleteStmt:
+			idVal, err := e.evalExpr(ctx, s.IDExpr, rc)
+			if err != nil {
+				return fmt.Errorf("effect delete %s id expr: %w", s.Model, err)
+			}
+			id, _ := idVal.(string)
+			if id == "" {
+				continue
+			}
+			if err := e.applyEffectSoftDeleteRow(ctx, s.Model, id); err != nil {
+				return err
+			}
+		case *ast.EffectNotifyStmt:
+			if e.roomBus == nil {
+				continue
+			}
+			roomID, ok := e.roomIDByName(s.RoomName)
+			if !ok {
+				return fmt.Errorf("notify: room %q not registered (missing setup block?)", s.RoomName)
+			}
+
+			reserved := map[string]bool{"method": true, "model": true, "record_id": true}
+			msg := make(map[string]interface{}, len(s.Payload)+1)
+			msg["room_id"] = roomID
+			extra := make(map[string]interface{})
+			for k, expr := range s.Payload {
+				val, err := e.evalExpr(ctx, expr, rc)
+				if err != nil {
+					return fmt.Errorf("notify payload %q: %w", k, err)
+				}
+				if reserved[k] {
+					msg[k] = val
+				} else {
+					extra[k] = val
+				}
+			}
+			if len(extra) > 0 {
+				if b, jErr := json.Marshal(extra); jErr == nil {
+					msg["payload"] = map[string]interface{}{"body": string(b)}
+				}
+			}
+			e.roomBus.Publish(roomID, msg)
+		}
+	}
+	return nil
+}
+
+func (e *Executor) runSyncEffectStatements(ctx context.Context, effect *ast.Block, rc *runCtx, entityID string) error {
+	if effect == nil {
+		return nil
+	}
+	rc.output["id"] = entityID
+	rc.vars["id"] = entityID
+	return e.executeEffectStmtList(ctx, syncEffectStatements(effect), rc)
+}
+
+func (e *Executor) ExecuteEffectActions(ctx context.Context, stmts []ast.Statement, input map[string]interface{}, vars map[string]interface{}, entityID string) error {
+	rc := newRunCtx(WithSystemBody(input))
+	for k, v := range vars {
+		rc.vars[k] = v
+	}
+	rc.output["id"] = entityID
+	rc.vars["id"] = entityID
+	return e.executeEffectStmtList(ctx, stmts, rc)
 }
 
 func (e *Executor) resolveOp(modelName, opType string) (*ast.Operation, *ast.Model, error) {
@@ -623,34 +1459,81 @@ func scanRows(rows *sql.Rows) ([]map[string]interface{}, error) {
 		}
 		row := make(map[string]interface{})
 		for i, col := range cols {
-			row[col] = vals[i]
+			row[col] = normalizeScanValue(vals[i])
 		}
 		results = append(results, row)
 	}
 	return results, rows.Err()
 }
 
+func normalizeScanValue(v interface{}) interface{} {
+	switch x := v.(type) {
+	case []byte:
+		return string(x)
+	default:
+		return v
+	}
+}
+
 type runCtx struct {
-	input     map[string]interface{}
+	req       map[string]interface{}
+	body      map[string]interface{}
 	principal map[string]interface{}
 	output    map[string]interface{}
 	vars      map[string]interface{}
+	isSystem  bool
+
+	rootRequestID string
+	operation     string
+	modelName     string
+	blockType     string
+	depth         int
 }
 
-func newRunCtx(input map[string]interface{}) *runCtx {
-	return &runCtx{
-		input:     input,
+func newRunCtx(req map[string]interface{}) *runCtx {
+	if req == nil {
+		req = map[string]interface{}{}
+	}
+	rc := &runCtx{
+		req:       req,
 		principal: make(map[string]interface{}),
 		output:    make(map[string]interface{}),
 		vars:      make(map[string]interface{}),
 	}
+	if b, ok := req["body"].(map[string]interface{}); ok {
+		rc.body = b
+	}
+	if v, ok := rc.req["__system"]; ok && v == true {
+		rc.isSystem = true
+		rc.principal["is_system"] = true
+		delete(rc.req, "__system")
+	}
+	return rc
+}
+
+func (rc *runCtx) payload() map[string]interface{} {
+	if rc.body != nil {
+		return rc.body
+	}
+	skip := map[string]bool{"filter": true, "cursor": true, "token": true, "admin_key": true, "body": true}
+	out := make(map[string]interface{})
+	for k, v := range rc.req {
+		if !skip[k] {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (rc *runCtx) resolve(object string, fields []string) interface{} {
 	var base interface{}
 	switch object {
-	case "input":
-		base = rc.input
+	case "body":
+		base = rc.payload()
+	case "request":
+		base = rc.req
+	case "filter":
+		base = rc.req["filter"]
 	case "principal":
 		base = rc.principal
 	case "output":
@@ -709,4 +1592,430 @@ func checkType(val interface{}, typeName string) error {
 		}
 	}
 	return nil
+}
+
+func fieldKeys(f *ast.Field) (string, string) {
+	if f.Type == ast.TypeRelation {
+		return f.Name + "_id", compiler.SnakeCase(f.Name) + "_id"
+	}
+	return f.Name, compiler.SnakeCase(f.Name)
+}
+
+func resolveDBKey(fieldName string, model *ast.Model) string {
+	for _, f := range model.Fields {
+		if f.Name == fieldName || compiler.SnakeCase(f.Name) == compiler.SnakeCase(fieldName) {
+			_, dbKey := fieldKeys(f)
+			return dbKey
+		}
+	}
+
+	return compiler.SnakeCase(fieldName)
+}
+
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+func toTimeValue(v interface{}) *time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return &t
+	case *time.Time:
+		return t
+	case string:
+		parsed, err := time.Parse(time.RFC3339, t)
+		if err != nil {
+			return nil
+		}
+		return &parsed
+	}
+	return nil
+}
+
+func maskRestrictedFields(row map[string]interface{}, model *ast.Model) {
+	if model == nil {
+		return
+	}
+	for _, f := range model.Fields {
+
+		hasRestricted := false
+		for _, c := range f.Constraints {
+			if c == "--restricted" {
+				hasRestricted = true
+				break
+			}
+		}
+		if !hasRestricted {
+			continue
+		}
+
+		_, dbKey := fieldKeys(f)
+
+		if val, ok := row[dbKey]; ok {
+			switch v := val.(type) {
+			case string:
+				if len(v) >= 3 {
+					row[dbKey] = "..." + v[len(v)-3:]
+				} else if len(v) > 0 {
+					row[dbKey] = "..." + v
+				} else {
+					row[dbKey] = "..."
+				}
+			case []byte:
+				str := string(v)
+				if len(str) >= 3 {
+					row[dbKey] = "..." + str[len(str)-3:]
+				} else if len(str) > 0 {
+					row[dbKey] = "..." + str
+				} else {
+					row[dbKey] = "..."
+				}
+			}
+		}
+	}
+}
+
+// Sum returns the sum of a field across records matching the filter
+func (e *Executor) Sum(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.sum "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "sum", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "sum")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "sum"),
+		attribute.String("fookie.field", field),
+	)
+
+	op, model, err := e.resolveOp(modelName, "sum")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "sum", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileSumQuery(model, field, op)
+	e.logger.Info("sum query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val sql.NullFloat64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	if val.Valid {
+		result = val.Float64
+	}
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
+}
+
+// Count returns the count of records matching the filter
+func (e *Executor) Count(ctx context.Context, modelName string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.count "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "count", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "count")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "count"),
+	)
+
+	op, model, err := e.resolveOp(modelName, "count")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "count", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileCountQuery(model, op)
+	e.logger.Info("count query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val int64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	result = float64(val)
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
+}
+
+// Avg returns the average of a field across records matching the filter
+func (e *Executor) Avg(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.avg "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "avg", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "avg")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "avg"),
+		attribute.String("fookie.field", field),
+	)
+
+	op, model, err := e.resolveOp(modelName, "avg")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "avg", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileAvgQuery(model, field, op)
+	e.logger.Info("avg query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val sql.NullFloat64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	if val.Valid {
+		result = val.Float64
+	}
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
+}
+
+// Min returns the minimum value of a field across records matching the filter
+func (e *Executor) Min(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.min "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "min", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "min")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "min"),
+		attribute.String("fookie.field", field),
+	)
+
+	op, model, err := e.resolveOp(modelName, "min")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "min", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileMinQuery(model, field, op)
+	e.logger.Info("min query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val sql.NullFloat64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	if val.Valid {
+		result = val.Float64
+	}
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
+}
+
+// Max returns the maximum value of a field across records matching the filter
+func (e *Executor) Max(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.max "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "max", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "max")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "max"),
+		attribute.String("fookie.field", field),
+	)
+
+	op, model, err := e.resolveOp(modelName, "max")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "max", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileMaxQuery(model, field, op)
+	e.logger.Info("max query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val sql.NullFloat64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	if val.Valid {
+		result = val.Float64
+	}
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
 }

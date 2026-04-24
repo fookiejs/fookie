@@ -21,11 +21,20 @@ func (sg *SQLGenerator) Generate() ([]string, error) {
 	for _, model := range sg.schema.Models {
 		sqls = append(sqls, sg.modelDDL(model))
 	}
+	for _, model := range sg.schema.Models {
+		sqls = append(sqls, sg.modelColumnMigrations(model)...)
+	}
 
 	sqls = append(sqls,
 		sg.auditLogDDL(),
 		sg.eventLogDDL(),
 		sg.outboxDDL(),
+
+		`ALTER TABLE "outbox" ADD COLUMN IF NOT EXISTS "target_field" VARCHAR(255)`,
+		`ALTER TABLE "outbox" ADD COLUMN IF NOT EXISTS "run_after" TIMESTAMPTZ`,
+		`ALTER TABLE "outbox" ADD COLUMN IF NOT EXISTS "recur_cron" VARCHAR(64)`,
+		`ALTER TABLE "outbox" ADD COLUMN IF NOT EXISTS "root_request_id" TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_root_request ON "outbox"("root_request_id")`,
 	)
 
 	return sqls, nil
@@ -50,8 +59,22 @@ func (sg *SQLGenerator) modelDDL(m *ast.Model) string {
 	)
 }
 
+func (sg *SQLGenerator) modelColumnMigrations(m *ast.Model) []string {
+	table := snake(m.Name)
+	var out []string
+	for _, f := range m.Fields {
+		col := fieldColumn(f)
+		sqlType := fieldSQLType(f)
+		out = append(out, fmt.Sprintf(
+			`ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS "%s" %s`,
+			table, col, sqlType,
+		))
+	}
+	return out
+}
+
 func (sg *SQLGenerator) fieldDDL(f *ast.Field) string {
-	col := snake(f.Name)
+	col := fieldColumn(f)
 	sqlType := fieldSQLType(f)
 	def := fmt.Sprintf(`"%s" %s`, col, sqlType)
 
@@ -62,6 +85,14 @@ func (sg *SQLGenerator) fieldDDL(f *ast.Field) string {
 		}
 	}
 	return def
+}
+
+func fieldColumn(f *ast.Field) string {
+	col := snake(f.Name)
+	if f.Type == ast.TypeRelation {
+		col += "_id"
+	}
+	return col
 }
 
 func fieldSQLType(f *ast.Field) string {
@@ -147,7 +178,10 @@ func (sg *SQLGenerator) outboxDDL() string {
   "saga_id" UUID,
   "saga_step" INT NOT NULL DEFAULT 0,
   "is_compensation" BOOLEAN NOT NULL DEFAULT FALSE,
-  "result_payload" JSONB
+  "result_payload" JSONB,
+  "target_field" VARCHAR(255),
+  "run_after"  TIMESTAMPTZ,
+  "recur_cron" VARCHAR(64)
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON "outbox"("status");
 CREATE INDEX IF NOT EXISTS idx_outbox_entity ON "outbox"("entity_type", "entity_id");
@@ -161,10 +195,10 @@ func (sg *SQLGenerator) readQueryPrefix(model *ast.Model, op *ast.Operation) str
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SELECT %s\nFROM \"%s\"", projection, table))
 
-	b.WriteString("\nWHERE \"deleted_at\" IS NULL")
+	b.WriteString("\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'")
 
-	if op.Where != nil {
-		for _, cond := range op.Where.Conditions {
+	if op.Filter != nil {
+		for _, cond := range op.Filter.Conditions {
 			b.WriteString(fmt.Sprintf("\n  AND %s", sg.compileExpr(cond)))
 		}
 	}
@@ -172,39 +206,39 @@ func (sg *SQLGenerator) readQueryPrefix(model *ast.Model, op *ast.Operation) str
 	return b.String()
 }
 
-func (sg *SQLGenerator) readQuerySuffix(model *ast.Model, op *ast.Operation) string {
-	var b strings.Builder
-
-	for i, ob := range op.OrderBy {
-		if i == 0 {
-			b.WriteString("\nORDER BY ")
-		} else {
-			b.WriteString(", ")
-		}
-		b.WriteString(fmt.Sprintf("\"%s\"", snake(ob.Field)))
-		if ob.Desc {
-			b.WriteString(" DESC")
-		}
-	}
-
-	if op.Cursor != nil && op.Cursor.Size > 0 {
-		b.WriteString(fmt.Sprintf("\nLIMIT %d", op.Cursor.Size))
-	}
-
-	return b.String()
-}
-
 func (sg *SQLGenerator) CompileRead(model *ast.Model, op *ast.Operation) string {
-	return sg.readQueryPrefix(model, op) + sg.readQuerySuffix(model, op) + ";"
+	return sg.CompileReadWithFilter(model, op, "", 0, 0)
 }
 
-func (sg *SQLGenerator) CompileReadWithFilter(model *ast.Model, op *ast.Operation, filterClause string) string {
+func (sg *SQLGenerator) CompileReadWithFilter(model *ast.Model, op *ast.Operation, filterClause string, limit, offset int) string {
 	q := sg.readQueryPrefix(model, op)
 	if filterClause != "" {
 		q += "\n  AND (" + filterClause + ")"
 	}
-	q += sg.readQuerySuffix(model, op) + ";"
-	return q
+
+	for i, ob := range op.OrderBy {
+		if i == 0 {
+			q += "\nORDER BY "
+		} else {
+			q += ", "
+		}
+		q += fmt.Sprintf(`"%s"`, snake(ob.Field))
+		if ob.Desc {
+			q += " DESC"
+		}
+	}
+
+	effectiveLimit := limit
+	if effectiveLimit == 0 && op.Cursor != nil && op.Cursor.Size > 0 {
+		effectiveLimit = op.Cursor.Size
+	}
+	if effectiveLimit > 0 {
+		q += fmt.Sprintf("\nLIMIT %d", effectiveLimit)
+	}
+	if offset > 0 {
+		q += fmt.Sprintf("\nOFFSET %d", offset)
+	}
+	return q + "\nFOR SHARE;"
 }
 
 func (sg *SQLGenerator) buildProjection(fields []*ast.SelectField) string {
@@ -357,3 +391,67 @@ func SnakeCase(s string) string {
 }
 
 func snake(s string) string { return SnakeCase(s) }
+
+func (sg *SQLGenerator) appendFilter(sql string, filter *ast.FilterClause) string {
+	if filter == nil {
+		return sql
+	}
+	for _, cond := range filter.Conditions {
+		sql += fmt.Sprintf("\n  AND %s", sg.compileExpr(cond))
+	}
+	return sql
+}
+
+func (sg *SQLGenerator) CompileSumQuery(model *ast.Model, field string, op *ast.Operation) string {
+	table := snake(model.Name)
+	col := snake(field)
+	sql := fmt.Sprintf("SELECT COALESCE(SUM(\"%s\"), 0) FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", col, table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}
+
+func (sg *SQLGenerator) CompileCountQuery(model *ast.Model, op *ast.Operation) string {
+	table := snake(model.Name)
+	sql := fmt.Sprintf("SELECT COUNT(*) FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}
+
+func (sg *SQLGenerator) CompileAvgQuery(model *ast.Model, field string, op *ast.Operation) string {
+	table := snake(model.Name)
+	col := snake(field)
+	sql := fmt.Sprintf("SELECT COALESCE(AVG(\"%s\"), 0) FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", col, table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}
+
+func (sg *SQLGenerator) CompileMinQuery(model *ast.Model, field string, op *ast.Operation) string {
+	table := snake(model.Name)
+	col := snake(field)
+	sql := fmt.Sprintf("SELECT MIN(\"%s\") FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", col, table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}
+
+func (sg *SQLGenerator) CompileMaxQuery(model *ast.Model, field string, op *ast.Operation) string {
+	table := snake(model.Name)
+	col := snake(field)
+	sql := fmt.Sprintf("SELECT MAX(\"%s\") FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", col, table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}
