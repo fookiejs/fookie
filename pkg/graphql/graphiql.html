@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fookie — Depo / GraphiQL</title>
+  <link rel="stylesheet" href="https://unpkg.com/graphiql@2.4.7/graphiql.min.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      padding: 0.45rem 0.85rem;
+      font: 13px system-ui, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-bottom: 1px solid #1e293b;
+    }
+    #toolbar strong { color: #38bdf8; font-weight: 600; }
+    #toolbar code { font-size: 12px; color: #94a3b8; }
+    #toolbar label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      color: #94a3b8;
+      margin-left: auto;
+    }
+    #toolbar input {
+      min-width: 14rem;
+      max-width: 32rem;
+      padding: 0.35rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: #f8fafc;
+      font-size: 13px;
+    }
+    #editor-root { height: calc(100vh - 44px); }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <strong>GraphiQL</strong>
+    <span style="opacity:.85">Depo / envanter · <code>demo/schema.fql</code></span>
+    <code>POST</code>
+    <span id="gql-endpoint"></span>
+    <label>
+      Bearer
+      <input id="gql-token" type="text" autocomplete="off" placeholder="örn. demo-token" />
+    </label>
+  </div>
+  <div id="editor-root">Yükleniyor…</div>
+
+  <script crossorigin src="https://unpkg.com/react@17.0.2/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@17.0.2/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/graphiql@2.4.7/graphiql.min.js"></script>
+  <script>
+    (function () {
+      var gqlPath = window.location.pathname || "/graphql";
+      var ep = document.getElementById("gql-endpoint");
+      if (ep) ep.textContent = window.location.origin + gqlPath;
+
+      function fetcher(graphQLParams) {
+        var headers = {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        };
+        var inp = document.getElementById("gql-token");
+        var tok = inp && inp.value ? inp.value.trim() : "";
+        if (tok) headers["Authorization"] = "Bearer " + tok;
+        return fetch(gqlPath, {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify(graphQLParams),
+        }).then(function (r) {
+          return r.json();
+        });
+      }
+
+      var defaultQuery =
+        "# Fookie: GraphQL alanları FQL model+read'den üretilir; elle yazılmış custom resolver yok.\n" +
+        "# Okumalar compiler → SQL; kurallar/roller executor katmanında.\n" +
+        "# Alan adı kuralı: Model `Warehouse` → sorgu `warehouses { ... }` (çoğul camelCase).\n" +
+        "# Bearer: herhangi bir dolu token (demo ValidateToken stub).\n" +
+        "\n" +
+        "query DepoEntityRead {\n" +
+        "  warehouses {\n" +
+        "    id\n" +
+        "    name\n" +
+        "    region\n" +
+        "    operatorId\n" +
+        "    status\n" +
+        "  }\n" +
+        "  products {\n" +
+        "    id\n" +
+        "    sku\n" +
+        "    name\n" +
+        "    unitCost\n" +
+        "    status\n" +
+        "  }\n" +
+        "  stockLots {\n" +
+        "    id\n" +
+        "    warehouseId\n" +
+        "    productId\n" +
+        "    quantityOnHand\n" +
+        "    reservedQty\n" +
+        "    status\n" +
+        "  }\n" +
+        "  stockAdjustments {\n" +
+        "    id\n" +
+        "    warehouseId\n" +
+        "    productId\n" +
+        "    quantityDelta\n" +
+        "    reason\n" +
+        "    skuSnapshot\n" +
+        "    riskScore\n" +
+        "    status\n" +
+        "  }\n" +
+        "}\n";
+
+      var el = document.getElementById("editor-root");
+      ReactDOM.render(
+        React.createElement(GraphiQL, {
+          fetcher: fetcher,
+          defaultQuery: defaultQuery,
+        }),
+        el
+      );
+    })();
+  </script>
+</body>
+</html>

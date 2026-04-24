@@ -1,0 +1,50 @@
+services:
+  fookie-server:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.server
+    environment:
+      DB_URL: postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable
+      PORT: ":8080"
+      SCHEMA_PATH: /app/schema/schema.fql
+      OTLP_ENDPOINT: otel-collector:4318
+      FOOKEE_SERVICE_NAME: fookie-server
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../demo/schema.fql:/app/schema/schema.fql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+    command: ["/app/server", "-db", "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"]
+
+  fookie-worker:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      DB_URL: postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable
+      SCHEMA_PATH: /app/schema/schema.fql
+      OTLP_ENDPOINT: otel-collector:4318
+      FOOKEE_SERVICE_NAME: fookie-worker
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+      METRICS_LISTEN: ":9091"
+    ports:
+      - "9091:9091"
+    volumes:
+      - ../../demo/schema.fql:/app/schema/schema.fql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      loki:
+        condition: service_started
+    command: ["/app/worker", "-db", "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"]

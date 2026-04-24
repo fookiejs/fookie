@@ -1,260 +1,478 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Fookie — Demo</title>
-  <style>
-    :root {
-      --bg: #0f1419;
-      --panel: #1a2332;
-      --text: #e7ecf3;
-      --muted: #8b9bb4;
-      --accent: #3d8bfd;
-      --ok: #3ecf8e;
-      --err: #f87171;
-      --font: system-ui, "Segoe UI", Roboto, sans-serif;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      line-height: 1.5;
-    }
-    header {
-      padding: 1.5rem 1.25rem;
-      border-bottom: 1px solid #2a3544;
-      background: var(--panel);
-    }
-    h1 { margin: 0; font-size: 1.35rem; font-weight: 600; }
-    p.lead { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.95rem; }
-    main { max-width: 52rem; margin: 0 auto; padding: 1.25rem; }
-    section {
-      background: var(--panel);
-      border-radius: 10px;
-      padding: 1rem 1.1rem;
-      margin-bottom: 1rem;
-      border: 1px solid #2a3544;
-    }
-    h2 { margin: 0 0 0.75rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
-    input[type="text"] {
-      width: 100%;
-      padding: 0.5rem 0.65rem;
-      border-radius: 6px;
-      border: 1px solid #3d4a5c;
-      background: var(--bg);
-      color: var(--text);
-      font-size: 0.95rem;
-      margin-bottom: 0.65rem;
-    }
-    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-    button {
-      cursor: pointer;
-      border: none;
-      border-radius: 8px;
-      padding: 0.55rem 1rem;
-      font-size: 0.9rem;
-      font-weight: 500;
-      background: var(--accent);
-      color: #fff;
-    }
-    button.secondary { background: #334155; color: var(--text); }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    pre {
-      margin: 0.75rem 0 0;
-      padding: 0.75rem;
-      border-radius: 8px;
-      background: var(--bg);
-      border: 1px solid #2a3544;
-      font-size: 0.78rem;
-      overflow: auto;
-      max-height: 280px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .status { font-size: 0.8rem; margin-top: 0.5rem; }
-    .status.ok { color: var(--ok); }
-    .status.err { color: var(--err); }
-    a { color: var(--accent); }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fookie · Live Money Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; background: #0b1220; color: #e6edf7; overflow: hidden; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; padding: 10px 20px; background: rgba(13,19,33,.85); border-bottom: 1px solid #1f2a44; }
+  .topbar h1 { font-size: 16px; font-weight: 600; letter-spacing: .02em; }
+  .topbar .status { font-size: 12px; color: #8fa1bf; }
+  .status.connected::before { content:"●"; color:#22c55e; margin-right:6px; }
+  .status.disconnected::before { content:"●"; color:#ef4444; margin-right:6px; }
+
+  #world {
+    position: relative;
+    width: 100vw;
+    height: calc(100vh - 52px - 160px);
+    background:
+      radial-gradient(circle at 30% 20%, rgba(94,234,212,.08), transparent 50%),
+      radial-gradient(circle at 80% 70%, rgba(251,191,36,.06), transparent 50%),
+      linear-gradient(180deg, #0b1220 0%, #0a0f1a 100%);
+    overflow: auto;
+    cursor: grab;
+    scroll-behavior: smooth;
+  }
+  #world.dragging {
+    cursor: grabbing;
+    user-select: none;
+  }
+
+  .user {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    display: flex; flex-direction: column; align-items: center;
+    pointer-events: none;
+    transition: top .3s ease, left .3s ease;
+  }
+  .user .dot {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border: 3px solid #fff2;
+    box-shadow: 0 8px 24px rgba(59,130,246,.4);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; color: #fff;
+  }
+  .user .name {
+    margin-top: 6px;
+    font-size: 12px; color: #c7d2fe;
+    background: rgba(12,18,32,.8); padding: 2px 8px; border-radius: 4px;
+    white-space: nowrap;
+  }
+  .user .balance {
+    margin-top: 3px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 13px; font-weight: 600; color: #5eead4;
+    background: rgba(12,18,32,.8); padding: 2px 10px; border-radius: 4px;
+    transition: background .4s ease, color .4s ease;
+    min-width: 70px; text-align: center;
+  }
+  .user .balance.flash-up { background: rgba(34,197,94,.3); color: #86efac; }
+  .user .balance.flash-down { background: rgba(239,68,68,.3); color: #fca5a5; }
+
+  .coin {
+    position: absolute;
+    z-index: 10;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; font-weight: 700;
+    color: #fbbf24;
+    background: rgba(251,191,36,.15);
+    border: 1px solid rgba(251,191,36,.4);
+    padding: 3px 8px; border-radius: 12px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    transition: left 800ms cubic-bezier(.25,.8,.4,1),
+                top 800ms cubic-bezier(.25,.8,.4,1),
+                opacity 800ms ease;
+  }
+  .flow-arrow {
+    position: absolute;
+    z-index: 7;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(96,165,250,.2), rgba(96,165,250,.95));
+    transform-origin: 0 50%;
+    opacity: 0;
+    border-radius: 2px;
+    pointer-events: none;
+    animation: arrow-blink 1s ease-out forwards;
+  }
+  .flow-arrow::after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: -4px;
+    border-left: 8px solid rgba(125,211,252,.95);
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+  }
+  @keyframes arrow-blink {
+    0% { opacity: 0; }
+    15% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  .atm-fx {
+    position: absolute;
+    top: -18px;
+    right: -10px;
+    font-size: 16px;
+    filter: drop-shadow(0 0 8px rgba(251,191,36,.7));
+    animation: atm-pop .8s ease forwards;
+    pointer-events: none;
+  }
+  @keyframes atm-pop {
+    0% { transform: scale(.6) translateY(6px); opacity: 0; }
+    30% { transform: scale(1.1) translateY(-2px); opacity: 1; }
+    100% { transform: scale(1) translateY(-12px); opacity: 0; }
+  }
+  .dot.atm {
+    box-shadow: 0 0 0 0 rgba(251,191,36,.6), 0 10px 26px rgba(59,130,246,.45);
+    animation: atm-pulse .8s ease;
+  }
+  @keyframes atm-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(251,191,36,.6), 0 10px 26px rgba(59,130,246,.45); }
+    100% { box-shadow: 0 0 0 18px rgba(251,191,36,0), 0 10px 26px rgba(59,130,246,.45); }
+  }
+  .hint {
+    position: absolute;
+    right: 14px;
+    top: 12px;
+    z-index: 20;
+    font-size: 11px;
+    color: #9fb2d3;
+    background: rgba(10,14,26,.66);
+    border: 1px solid #2a3657;
+    border-radius: 8px;
+    padding: 6px 10px;
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+  }
+
+  #log {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 160px;
+    background: rgba(8,12,22,.95); border-top: 1px solid #1f2a44;
+    padding: 8px 16px; overflow-y: auto;
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: #94a3b8;
+  }
+  #log h3 { font-size: 11px; color: #64748b; font-weight: 600; margin-bottom: 6px; letter-spacing: .1em; text-transform: uppercase; }
+  .logline { padding: 2px 0; }
+  .logline .amt { color: #fbbf24; font-weight: 600; }
+  .logline .arrow { color: #64748b; margin: 0 6px; }
+  .logline .name { color: #c7d2fe; }
+</style>
 </head>
 <body>
-  <header>
-    <h1>Fookie demo</h1>
-    <p class="lead">
-      Sunucu açıkken bu sayfa <code>/graphql</code> ile konuşur. Önce Postgres, sonra
-      <code>go run ./cmd/server</code> (veya <code>make run-server</code>).
-    </p>
-  </header>
-  <main>
-    <section>
-      <h2>Bağlantı</h2>
-      <label for="base">API kökü (boş = aynı origin)</label>
-      <input id="base" type="text" value="" placeholder="örn. http://localhost:8080" />
-      <label for="token">Authorization Bearer (Transaction için; boş olamaz)</label>
-      <input id="token" type="text" value="demo-token" placeholder="demo-token" />
-    </section>
 
-    <section>
-      <h2>Hızlı işlemler</h2>
-      <div class="row">
-        <button type="button" id="btn-health">GET /health</button>
-        <button type="button" id="btn-seed" class="secondary">Örnek veri (2 kullanıcı + 2 cüzdan)</button>
-        <button type="button" id="btn-users" class="secondary">Kullanıcıları listele</button>
-      </div>
-      <p class="status" id="seed-hint"></p>
-    </section>
+<div class="topbar">
+  <h1>🏦 Fookie · Live Money Flow</h1>
+  <div class="status disconnected" id="status">connecting…</div>
+</div>
 
-    <section>
-      <h2>Transfer (GraphQL mutation)</h2>
-      <p style="margin:0 0 0.5rem; font-size:0.9rem; color:var(--muted);">
-        Önce “Örnek veri” ile cüzdan ID’leri oluşturulur. Tutarı değiştirip transferi dene.
-      </p>
-      <label for="amount">Tutar</label>
-      <input id="amount" type="text" value="42.5" />
-      <div class="row" style="margin-top:0.5rem;">
-        <button type="button" id="btn-tx">createTransaction</button>
-      </div>
-    </section>
+<div id="world">
+  <div class="hint">Kaydır: mouse wheel • Sürükle: sol tık basılı</div>
+</div>
 
-    <section>
-      <h2>Son yanıt</h2>
-      <pre id="out">Henüz istek yok.</pre>
-    </section>
-  </main>
+<div id="log">
+  <h3>Recent Transfers</h3>
+  <div id="loglines"></div>
+</div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
-    const base = () => $("base").value.replace(/\/$/, "");
-    const gqlURL = () => base() + "/graphql";
-    const healthURL = () => base() + "/health";
+<script>
+(() => {
+  const world = document.getElementById('world');
+  const logLines = document.getElementById('loglines');
+  const statusEl = document.getElementById('status');
 
-    let state = { walletA: null, walletB: null };
+  // wallet_id -> { userEl, balanceEl, nameEl, x, y, name, userId, walletId, balance }
+  const byWallet = new Map();
+  // user_id -> same
+  const byUser = new Map();
 
-    function log(msg, isErr) {
-      const el = $("out");
-      el.textContent = typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
-      const st = $("seed-hint");
-      if (isErr) { st.textContent = ""; st.className = "status err"; }
+  function setStatus(ok, text) {
+    statusEl.className = 'status ' + (ok ? 'connected' : 'disconnected');
+    statusEl.textContent = text;
+  }
+
+  function fmtMoney(n) {
+    if (n == null || isNaN(n)) return '—';
+    const v = Number(n);
+    if (v >= 1e6) return '$' + (v/1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return '$' + (v/1e3).toFixed(1) + 'k';
+    return '$' + v.toFixed(0);
+  }
+
+  let placedCount = 0;
+  function placeUser(user, wallet) {
+    const W = world.clientWidth;
+    const CELL_W = 140, CELL_H = 110;
+    const cols = Math.max(1, Math.floor((W - 40) / CELL_W));
+    const idx = placedCount++;
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+    const x = 40 + col * CELL_W + CELL_W / 2;
+    const y = 60 + row * CELL_H + CELL_H / 2;
+
+    const el = document.createElement('div');
+    el.className = 'user';
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    el.innerHTML = `
+      <div class="dot">${(user.display_name || '?').charAt(0).toUpperCase()}</div>
+      <div class="name">${escapeHtml(user.display_name || '')}</div>
+      <div class="balance">${fmtMoney(wallet && wallet.balance)}</div>
+    `;
+    world.appendChild(el);
+
+    const entry = {
+      userEl: el,
+      balanceEl: el.querySelector('.balance'),
+      nameEl: el.querySelector('.name'),
+      dotEl: el.querySelector('.dot'),
+      x, y,
+      name: user.display_name || '',
+      userId: user.id,
+      walletId: user.wallet_id || (wallet && wallet.id),
+      balance: wallet ? Number(wallet.balance) : null,
+    };
+    byUser.set(user.id, entry);
+    if (entry.walletId) byWallet.set(entry.walletId, entry);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function flashBalance(walletId, newBalance) {
+    const entry = byWallet.get(walletId);
+    if (!entry) return;
+    const prev = entry.balance;
+    const next = Number(newBalance);
+    entry.balance = next;
+    entry.balanceEl.textContent = fmtMoney(next);
+    if (prev != null && !isNaN(prev)) {
+      const cls = next >= prev ? 'flash-up' : 'flash-down';
+      entry.balanceEl.classList.add(cls);
+      setTimeout(() => entry.balanceEl.classList.remove(cls), 500);
+    }
+  }
+
+  function animateTransfer(body) {
+    // Support both room-payload keys (from/to) and entity_events keys (from_wallet_id/to_wallet_id)
+    const fromId = body.from || body.from_wallet_id;
+    const toId   = body.to   || body.to_wallet_id;
+    const from = byWallet.get(fromId);
+    const to   = byWallet.get(toId);
+    if (!from || !to) return;
+
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dist = Math.max(24, Math.hypot(dx, dy) - 40);
+    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    const arrow = document.createElement('div');
+    arrow.className = 'flow-arrow';
+    arrow.style.left = from.x + 'px';
+    arrow.style.top = from.y + 'px';
+    arrow.style.width = dist + 'px';
+    arrow.style.transform = `rotate(${angle}deg)`;
+    world.appendChild(arrow);
+    setTimeout(() => arrow.remove(), 1100);
+
+    const coin = document.createElement('div');
+    coin.className = 'coin';
+    coin.textContent = '💰 ' + fmtMoney(body.amount);
+    coin.style.left = from.x + 'px';
+    coin.style.top  = (from.y - 20) + 'px';
+    coin.style.opacity = '1';
+    world.appendChild(coin);
+
+    // Kick off transition on next frame
+    requestAnimationFrame(() => {
+      coin.style.left = to.x + 'px';
+      coin.style.top  = (to.y - 20) + 'px';
+    });
+    // Fade near the end
+    setTimeout(() => { coin.style.opacity = '0'; }, 700);
+    setTimeout(() => coin.remove(), 900);
+
+    if (isAtmTransfer(body)) {
+      triggerAtmEffect(from);
     }
 
-    async function gql(query, variables) {
-      const tok = $("token").value.trim();
-      const body = { query };
-      if (variables) body.variables = variables;
-      const headers = { "Content-Type": "application/json" };
-      if (tok) headers["Authorization"] = "Bearer " + tok;
-      const r = await fetch(gqlURL(), { method: "POST", headers, body: JSON.stringify(body) });
-      const j = await r.json();
-      if (!r.ok) throw new Error(JSON.stringify(j));
-      return j;
+    // Log line
+    const line = document.createElement('div');
+    line.className = 'logline';
+    line.innerHTML = `<span class="name">${escapeHtml(from.name)}</span><span class="arrow">→</span><span class="name">${escapeHtml(to.name)}</span> <span class="amt">${fmtMoney(body.amount)}</span>`;
+    logLines.prepend(line);
+    while (logLines.childElementCount > 20) logLines.lastElementChild.remove();
+  }
+
+  function isAtmTransfer(body) {
+    const bucket = [body.channel, body.type, body.transfer_type, body.description, body.note]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return bucket.includes('atm') || bucket.includes('cash') || bucket.includes('withdraw') || bucket.includes('deposit');
+  }
+
+  function triggerAtmEffect(entry) {
+    if (!entry || !entry.dotEl) return;
+    entry.dotEl.classList.add('atm');
+    const fx = document.createElement('span');
+    fx.className = 'atm-fx';
+    fx.textContent = '🏧';
+    entry.dotEl.appendChild(fx);
+    setTimeout(() => entry.dotEl.classList.remove('atm'), 820);
+    setTimeout(() => fx.remove(), 820);
+  }
+
+  function enablePanScroll() {
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    world.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      world.classList.add('dragging');
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = world.scrollLeft;
+      startTop = world.scrollTop;
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      world.scrollLeft = startLeft - (e.clientX - startX);
+      world.scrollTop = startTop - (e.clientY - startY);
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      world.classList.remove('dragging');
+    });
+    world.addEventListener('mouseleave', () => {
+      if (!dragging) return;
+      dragging = false;
+      world.classList.remove('dragging');
+    });
+  }
+
+  async function gqlQuery(query) {
+    const res = await fetch('/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'admin_key': 'demo' },
+      body: JSON.stringify({ query }),
+    });
+    const j = await res.json();
+    return j.data || {};
+  }
+
+  async function loadInitial() {
+    try {
+      const data = await gqlQuery('{ all_bank_user { id display_name wallet_id world_x world_y } all_bank_wallet { id balance } }');
+      const users = data.all_bank_user || [];
+      const wallets = data.all_bank_wallet || [];
+      const walletById = new Map();
+      for (const w of wallets) walletById.set(w.id, w);
+      for (const u of users) placeUser(u, walletById.get(u.wallet_id));
+    } catch (e) {
+      console.error('initial load failed', e);
+    }
+  }
+
+  async function getTransferRoomId() {
+    try {
+      const d = await gqlQuery('{ all_room { id name } }');
+      const rooms = d.all_room || [];
+      const r = rooms.find(x => x.name === 'transfers-feed');
+      return r ? r.id : null;
+    } catch { return null; }
+  }
+
+  async function streamSubscription(query, onEvent) {
+    while (true) {
+      try {
+        const res = await fetch('/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'admin_key': 'demo' },
+          body: JSON.stringify({ query }),
+        });
+        if (!res.ok || !res.body) throw new Error('bad response ' + res.status);
+        setStatus(true, 'live');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            try { onEvent(JSON.parse(line)); } catch (e) { console.warn('parse', e, line); }
+          }
+        }
+      } catch (e) {
+        console.warn('stream error, reconnecting', e);
+      }
+      setStatus(false, 'reconnecting…');
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  }
+
+  async function startStreams() {
+    // Stream 1: transfer events from the FQL notify effect via room subscription
+    const transferRoomId = await getTransferRoomId();
+    if (transferRoomId) {
+      streamSubscription(
+        `subscription { room_graphql_message(room_id: "${transferRoomId}") { method payload { body } } }`,
+        (m) => {
+          const ev = m.data?.room_graphql_message;
+          if (!ev || ev.method !== 'transfer') return;
+          let body; try { body = JSON.parse(ev.payload?.body || '{}'); } catch { return; }
+          animateTransfer(body);
+        },
+      );
+    } else {
+      // Fallback: entity_events if room not available yet
+      streamSubscription(
+        'subscription { entity_events(model: "WalletTransfer") { op id payload_json } }',
+        (m) => {
+          const ev = m.data?.entity_events;
+          if (!ev || ev.op !== 'created') return;
+          let body; try { body = JSON.parse(ev.payload_json || '{}'); } catch { return; }
+          animateTransfer(body);
+        },
+      );
     }
 
-    $("btn-health").onclick = async () => {
-      try {
-        const r = await fetch(healthURL());
-        const t = await r.text();
-        log({ status: r.status, body: t });
-      } catch (e) {
-        log(String(e), true);
-      }
-    };
+    // Stream 2: balance updates via entity_events on BankWallet
+    streamSubscription(
+      'subscription { entity_events(model: "BankWallet") { op id payload_json } }',
+      (m) => {
+        const ev = m.data?.entity_events;
+        if (!ev || ev.op !== 'updated') return;
+        let body; try { body = JSON.parse(ev.payload_json || '{}'); } catch { return; }
+        flashBalance(ev.id, body.balance);
+      },
+    );
 
-    $("btn-seed").onclick = async () => {
-      $("seed-hint").textContent = "Çalışıyor…";
-      $("seed-hint").className = "status";
-      try {
-        const q1 = `mutation { createUser(input: { email: "alice@demo.fookie.local", name: "Alice Demo" }) { id email name status } }`;
-        const q2 = `mutation { createUser(input: { email: "bob@demo.fookie.local", name: "Bob Demo" }) { id email name status } }`;
-        const a = await gql(q1);
-        const b = await gql(q2);
-        if (a.errors?.length) throw new Error(JSON.stringify(a.errors));
-        if (b.errors?.length) throw new Error(JSON.stringify(b.errors));
-        const idA = a.data.createUser.id;
-        const idB = b.data.createUser.id;
+    // Stream 3: new users via entity_events on BankUser
+    streamSubscription(
+      'subscription { entity_events(model: "BankUser") { op id payload_json } }',
+      async (m) => {
+        const ev = m.data?.entity_events;
+        if (!ev || ev.op !== 'created') return;
+        try {
+          const d = await gqlQuery('{ all_bank_user { id display_name wallet_id world_x world_y } all_bank_wallet { id balance } }');
+          const users = d.all_bank_user || [];
+          const wallets = d.all_bank_wallet || [];
+          const wm = new Map(wallets.map(w => [w.id, w]));
+          for (const u of users) {
+            if (!byUser.has(u.id)) placeUser(u, wm.get(u.wallet_id));
+          }
+        } catch {}
+      },
+    );
+  }
 
-        const wq = `
-          mutation($input: CreateWalletInput!) {
-            createWallet(input: $input) { id userId balance currency label status }
-          }`;
-        const wa = await gql(wq, {
-          input: { userId: idA, balance: 1000, currency: "USD", label: "Ana" },
-        });
-        const wb = await gql(wq, {
-          input: { userId: idB, balance: 50, currency: "USD", label: "Ana" },
-        });
-        if (wa.errors?.length) throw new Error(JSON.stringify(wa.errors));
-        if (wb.errors?.length) throw new Error(JSON.stringify(wb.errors));
-
-        state.walletA = wa.data.createWallet.id;
-        state.walletB = wb.data.createWallet.id;
-        $("seed-hint").textContent =
-          "Hazır: Alice cüzdan " + state.walletA.slice(0, 8) + "… → Bob cüzdan " + state.walletB.slice(0, 8) + "…";
-        $("seed-hint").className = "status ok";
-        log({ createUser: [a.data.createUser, b.data.createUser], wallets: [wa.data.createWallet, wb.data.createWallet] });
-      } catch (e) {
-        $("seed-hint").textContent = String(e);
-        $("seed-hint").className = "status err";
-        log(String(e), true);
-      }
-    };
-
-    $("btn-users").onclick = async () => {
-      try {
-        const r = await gql(`query { users { id email name status } }`);
-        log(r);
-      } catch (e) {
-        log(String(e), true);
-      }
-    };
-
-    $("btn-tx").onclick = async () => {
-      if (!state.walletA || !state.walletB) {
-        log("Önce «Örnek veri» ile cüzdan oluştur.", true);
-        return;
-      }
-      const amount = parseFloat($("amount").value, 10);
-      if (!(amount > 0)) {
-        log("Tutar pozitif bir sayı olmalı.", true);
-        return;
-      }
-      const tok = $("token").value.trim();
-      if (!tok) {
-        log("Transaction için Bearer token gir (Authorization’a eklenir).", true);
-        return;
-      }
-      try {
-        const mutation = `
-          mutation($input: CreateTransactionInput!) {
-            createTransaction(input: $input) {
-              id
-              status
-              fromWalletId
-              toWalletId
-              amount
-              currency
-            }
-          }`;
-        const variables = {
-          input: {
-            fromWalletId: state.walletA,
-            toWalletId: state.walletB,
-            amount,
-            currency: "USD",
-            riskScore: 0,
-            recipientEmail: "bob@demo.fookie.local",
-          },
-        };
-        const r = await gql(mutation, variables);
-        log(r);
-      } catch (e) {
-        log(String(e), true);
-      }
-    };
-  </script>
+  enablePanScroll();
+  loadInitial().then(startStreams);
+})();
+</script>
 </body>
 </html>

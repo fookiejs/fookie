@@ -6,12 +6,13 @@ import (
 	"strings"
 
 	"github.com/fookiejs/fookie/pkg/ast"
+	"github.com/fookiejs/fookie/pkg/validator"
 )
 
 type Parser struct {
-	tokens  []Token
-	pos     int
-	errors  []string
+	tokens []Token
+	pos    int
+	errors []string
 }
 
 func NewParser(tokens []Token) *Parser {
@@ -117,6 +118,12 @@ func typeString(t Token) (ast.FieldType, *string) {
 }
 
 func (p *Parser) Parse() (*ast.Schema, error) {
+	for _, t := range p.tokens {
+		if t.Type == TOKEN_ILLEGAL {
+			return nil, fmt.Errorf("line %d: %s", t.LineNo, t.Value)
+		}
+	}
+
 	schema := &ast.Schema{}
 
 	for p.cur().Type != TOKEN_EOF {
@@ -144,6 +151,30 @@ func (p *Parser) Parse() (*ast.Schema, error) {
 				return nil, err
 			}
 			schema.Modules = append(schema.Modules, mod)
+
+		case TOKEN_SEED:
+			p.eat()
+			sb, err := p.parseSeedBlock()
+			if err != nil {
+				return nil, err
+			}
+			schema.Seeds = append(schema.Seeds, sb)
+
+		case TOKEN_CRON:
+			p.eat()
+			cb, err := p.parseCronBlock()
+			if err != nil {
+				return nil, err
+			}
+			schema.Crons = append(schema.Crons, cb)
+
+		case TOKEN_SETUP:
+			p.eat()
+			sb, err := p.parseSeedBlock()
+			if err != nil {
+				return nil, err
+			}
+			schema.Setups = append(schema.Setups, sb)
 
 		default:
 			return nil, p.errorf("unexpected top-level token: %q", p.cur().Value)
@@ -196,6 +227,26 @@ func (p *Parser) parseModel() (*ast.Model, error) {
 			}
 			model.CRUD[opType] = op
 
+		case TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX:
+			opType := p.eat().Value
+			if p.cur().Type != TOKEN_LPAREN {
+				return nil, p.errorf("expected ( after %s", opType)
+			}
+			p.eat()
+			if !isWordToken(p.cur()) {
+				return nil, p.errorf("expected field name in %s(...)", opType)
+			}
+			field := p.eat().Value
+			if _, err := p.expect(TOKEN_RPAREN); err != nil {
+				return nil, err
+			}
+			op, err := p.parseOperation(opType)
+			if err != nil {
+				return nil, err
+			}
+			op.Field = field
+			model.CRUD[opType] = op
+
 		default:
 			return nil, p.errorf("unexpected token in model %q: %q", model.Name, p.cur().Value)
 		}
@@ -214,7 +265,7 @@ func (p *Parser) parseFields() ([]*ast.Field, error) {
 
 	var fields []*ast.Field
 	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
-		if p.cur().Type != TOKEN_IDENTIFIER {
+		if !isWordToken(p.cur()) {
 			return nil, p.errorf("expected field name, got %q", p.cur().Value)
 		}
 		fieldName := p.eat().Value
@@ -228,6 +279,19 @@ func (p *Parser) parseFields() ([]*ast.Field, error) {
 		}
 		typeTok := p.eat()
 		ft, rel := typeString(typeTok)
+
+		if typeTok.Type == TOKEN_IDENTIFIER && typeTok.Value == "relation" && p.cur().Type == TOKEN_LPAREN {
+			p.eat()
+			if !isWordToken(p.cur()) {
+				return nil, p.errorf("expected model name after relation(")
+			}
+			modelName := p.eat().Value
+			if _, err := p.expect(TOKEN_RPAREN); err != nil {
+				return nil, err
+			}
+			ft = ast.TypeRelation
+			rel = &modelName
+		}
 
 		field := &ast.Field{
 			Name:     fieldName,
@@ -309,13 +373,13 @@ func (p *Parser) parseOperation(opType string) (*ast.Operation, error) {
 			}
 			op.Compensate = b
 
-		case TOKEN_WHERE:
+		case TOKEN_FILTER:
 			p.eat()
-			w, err := p.parseWhereClause()
+			w, err := p.parseFilterClause()
 			if err != nil {
 				return nil, err
 			}
-			op.Where = w
+			op.Filter = w
 
 		case TOKEN_ORDERBY:
 			p.eat()
@@ -332,13 +396,6 @@ func (p *Parser) parseOperation(opType string) (*ast.Operation, error) {
 				return nil, err
 			}
 			op.Cursor = cur
-
-		case TOKEN_LOCK:
-			p.eat()
-			if p.cur().Type == TOKEN_TRUE {
-				p.eat()
-				op.Lock = true
-			}
 
 		default:
 			return nil, p.errorf("unexpected token in %q operation: %q", opType, p.cur().Value)
@@ -359,6 +416,43 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 	block := &ast.Block{}
 
 	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+
+		if p.cur().Type == TOKEN_FOR {
+			fi, err := p.parseForIn()
+			if err != nil {
+				return nil, err
+			}
+			block.Statements = append(block.Statements, fi)
+			continue
+		}
+
+		if p.cur().Type == TOKEN_NOTIFY {
+			stmt, err := p.parseEffectNotify()
+			if err != nil {
+				return nil, err
+			}
+			block.Statements = append(block.Statements, stmt)
+			continue
+		}
+
+		if p.cur().Type == TOKEN_UPDATE {
+			stmt, err := p.parseEffectUpdate()
+			if err != nil {
+				return nil, err
+			}
+			block.Statements = append(block.Statements, stmt)
+			continue
+		}
+
+		if p.cur().Type == TOKEN_DELETE {
+			stmt, err := p.parseEffectDelete()
+			if err != nil {
+				return nil, err
+			}
+			block.Statements = append(block.Statements, stmt)
+			continue
+		}
+
 		if p.cur().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_ASSIGN {
 			name := p.eat().Value
 			p.eat()
@@ -389,6 +483,110 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 	return block, nil
 }
 
+func (p *Parser) parseEffectUpdate() (*ast.EffectUpdateStmt, error) {
+	lineNo := p.cur().LineNo
+	p.eat()
+
+	if !isWordToken(p.cur()) {
+		return nil, p.errorf("expected model name after 'update', got %q", p.cur().Value)
+	}
+	model := p.eat().Value
+
+	if _, err := p.expect(TOKEN_LPAREN); err != nil {
+		return nil, err
+	}
+	idExpr, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TOKEN_RPAREN); err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TOKEN_LBRACE); err != nil {
+		return nil, err
+	}
+	var fields []*ast.ModifyAssignment
+	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("expected field name in update block, got %q", p.cur().Value)
+		}
+		fieldName := p.eat().Value
+		if _, err := p.expect(TOKEN_ASSIGN); err != nil {
+			return nil, err
+		}
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, &ast.ModifyAssignment{
+			Field:  fieldName,
+			Value:  val,
+			LineNo: p.cur().LineNo,
+		})
+	}
+	if _, err := p.expect(TOKEN_RBRACE); err != nil {
+		return nil, err
+	}
+
+	return &ast.EffectUpdateStmt{
+		Model:  model,
+		IDExpr: idExpr,
+		Fields: fields,
+		LineNo: lineNo,
+	}, nil
+}
+
+func (p *Parser) parseEffectDelete() (*ast.EffectDeleteStmt, error) {
+	lineNo := p.cur().LineNo
+	p.eat()
+
+	if !isWordToken(p.cur()) {
+		return nil, p.errorf("expected model name after 'delete', got %q", p.cur().Value)
+	}
+	model := p.eat().Value
+
+	if _, err := p.expect(TOKEN_LPAREN); err != nil {
+		return nil, err
+	}
+	idExpr, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TOKEN_RPAREN); err != nil {
+		return nil, err
+	}
+
+	return &ast.EffectDeleteStmt{
+		Model:  model,
+		IDExpr: idExpr,
+		LineNo: lineNo,
+	}, nil
+}
+
+func (p *Parser) parseForIn() (*ast.ForIn, error) {
+	line := p.cur().LineNo
+	if _, err := p.expect(TOKEN_FOR); err != nil {
+		return nil, err
+	}
+	v, err := p.expect(TOKEN_IDENTIFIER)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TOKEN_IN); err != nil {
+		return nil, err
+	}
+	iter, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForIn{Var: v.Value, Iterable: iter, Body: body, LineNo: line}, nil
+}
+
 func (p *Parser) parseModifyBlock() (*ast.Block, error) {
 	if _, err := p.expect(TOKEN_LBRACE); err != nil {
 		return nil, err
@@ -397,6 +595,18 @@ func (p *Parser) parseModifyBlock() (*ast.Block, error) {
 	block := &ast.Block{}
 
 	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+		if isWordToken(p.cur()) && p.peek(1).Type == TOKEN_LPAREN {
+			lineNo := p.cur().LineNo
+			expr, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			block.Statements = append(block.Statements, &ast.PredicateExpr{
+				Expr:   expr,
+				LineNo: lineNo,
+			})
+			continue
+		}
 		if !isWordToken(p.cur()) || p.peek(1).Type != TOKEN_ASSIGN {
 			return nil, p.errorf("expected `field = expr` in modify block, got %q", p.cur().Value)
 		}
@@ -425,22 +635,23 @@ func isWordToken(t Token) bool {
 		TOKEN_STRING_TYPE, TOKEN_NUMBER_TYPE, TOKEN_BOOLEAN_TYPE,
 		TOKEN_ID_TYPE, TOKEN_DATE_TYPE, TOKEN_TIMESTAMP_TYPE, TOKEN_JSON_TYPE,
 		TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX,
-		TOKEN_LOCK, TOKEN_SIZE, TOKEN_ASC, TOKEN_DESC, TOKEN_IN, TOKEN_NOT,
+		TOKEN_SIZE, TOKEN_ASC, TOKEN_DESC, TOKEN_IN, TOKEN_NOT,
 		TOKEN_CREATE, TOKEN_READ, TOKEN_UPDATE, TOKEN_DELETE,
 		TOKEN_ROLE, TOKEN_RULE, TOKEN_MODIFY, TOKEN_EFFECT, TOKEN_COMPENSATE,
-		TOKEN_WHERE, TOKEN_ORDERBY, TOKEN_CURSOR, TOKEN_RETURN,
-		TOKEN_USE, TOKEN_FIELDS, TOKEN_INPUT, TOKEN_OUTPUT:
+		TOKEN_FILTER, TOKEN_ORDERBY, TOKEN_CURSOR, TOKEN_RETURN,
+		TOKEN_USE, TOKEN_FIELDS, TOKEN_BODY, TOKEN_OUTPUT,
+		TOKEN_SETUP, TOKEN_NOTIFY:
 		return true
 	}
 	return false
 }
 
-func (p *Parser) parseWhereClause() (*ast.WhereClause, error) {
+func (p *Parser) parseFilterClause() (*ast.FilterClause, error) {
 	if _, err := p.expect(TOKEN_LBRACE); err != nil {
 		return nil, err
 	}
 
-	w := &ast.WhereClause{}
+	w := &ast.FilterClause{}
 	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
 		expr, err := p.parseExpr()
 		if err != nil {
@@ -756,6 +967,25 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 		}
 		return e, nil
 
+	case TOKEN_LBRACKET:
+		lineNo := t.LineNo
+		p.eat()
+		var items []ast.Expression
+		for p.cur().Type != TOKEN_RBRACKET && p.cur().Type != TOKEN_EOF {
+			e, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, e)
+			if p.cur().Type == TOKEN_COMMA {
+				p.eat()
+			}
+		}
+		if _, err := p.expect(TOKEN_RBRACKET); err != nil {
+			return nil, err
+		}
+		return &ast.ArrayLiteral{Items: items, LineNo: lineNo}, nil
+
 	default:
 		if !isWordToken(t) {
 			return nil, p.errorf("unexpected token in expression: %q", t.Value)
@@ -788,18 +1018,7 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 }
 
 func isBuiltinValidator(name string) bool {
-	validators := map[string]bool{
-		"isEmail": true, "isRFC5321": true, "isRFC5322": true,
-		"isURL": true, "isHTTP": true, "isHTTPS": true,
-		"isE164": true, "isValidPhone": true, "getPhoneCountry": true,
-		"isValidUUID": true, "getUUIDVersion": true,
-		"isValidCoordinate": true, "isWithinBounds": true, "getDistance": true,
-		"isHexColor": true, "isRGBColor": true, "isHSLColor": true,
-		"isISOCurrency": true, "isValidLocale": true, "getBCP47": true,
-		"isValidIBAN": true, "getIBANCountry": true, "getIBANChecksum": true,
-		"isIPv4": true, "isIPv6": true, "isPrivateIP": true, "getIPVersion": true,
-	}
-	return validators[name]
+	return validator.BuiltinRegistered(name)
 }
 
 func (p *Parser) parseBuiltinCall(name string, lineNo int) (ast.Expression, error) {
@@ -904,7 +1123,7 @@ func (p *Parser) parseExternal() (*ast.External, error) {
 	}
 	ext := &ast.External{
 		Name:   name.Value,
-		Input:  make(map[string]string),
+		Body:   make(map[string]string),
 		Output: make(map[string]string),
 	}
 
@@ -914,14 +1133,14 @@ func (p *Parser) parseExternal() (*ast.External, error) {
 
 	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
 		switch p.cur().Type {
-		case TOKEN_INPUT:
+		case TOKEN_BODY:
 			p.eat()
 			fields, err := p.parseFields()
 			if err != nil {
 				return nil, err
 			}
 			for _, f := range fields {
-				ext.Input[f.Name] = string(f.Type)
+				ext.Body[f.Name] = string(f.Type)
 			}
 		case TOKEN_OUTPUT:
 			p.eat()
@@ -993,4 +1212,191 @@ func (p *Parser) parseModule() (*ast.Module, error) {
 		return nil, err
 	}
 	return mod, nil
+}
+
+func (p *Parser) parseSeedBlock() (*ast.SeedBlock, error) {
+	if _, err := p.expect(TOKEN_LBRACE); err != nil {
+		return nil, err
+	}
+	sb := &ast.SeedBlock{}
+	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("seed: expected model name, got %q", p.cur().Value)
+		}
+		modelName := p.eat().Value
+
+		if _, err := p.expect(TOKEN_LPAREN); err != nil {
+			return nil, err
+		}
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("seed: expected key field name inside '()', got %q", p.cur().Value)
+		}
+		keyField := p.eat().Value
+		if _, err := p.expect(TOKEN_RPAREN); err != nil {
+			return nil, err
+		}
+
+		if _, err := p.expect(TOKEN_LBRACE); err != nil {
+			return nil, err
+		}
+		entry := &ast.SeedEntry{Model: modelName, KeyField: keyField}
+		for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+			rec, err := p.parseSeedRecord()
+			if err != nil {
+				return nil, err
+			}
+			entry.Records = append(entry.Records, rec)
+		}
+		if _, err := p.expect(TOKEN_RBRACE); err != nil {
+			return nil, err
+		}
+		sb.Entries = append(sb.Entries, entry)
+	}
+	if _, err := p.expect(TOKEN_RBRACE); err != nil {
+		return nil, err
+	}
+	return sb, nil
+}
+
+func (p *Parser) parseSeedRecord() (map[string]interface{}, error) {
+	if _, err := p.expect(TOKEN_LBRACE); err != nil {
+		return nil, err
+	}
+	rec := map[string]interface{}{}
+	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("seed record: expected field name, got %q", p.cur().Value)
+		}
+		key := p.eat().Value
+		if _, err := p.expect(TOKEN_COLON); err != nil {
+			return nil, err
+		}
+		val, err := p.parseSeedValue()
+		if err != nil {
+			return nil, err
+		}
+		rec[key] = val
+
+		if p.cur().Type == TOKEN_COMMA {
+			p.eat()
+		}
+	}
+	if _, err := p.expect(TOKEN_RBRACE); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+func (p *Parser) parseEffectNotify() (*ast.EffectNotifyStmt, error) {
+	lineNo := p.cur().LineNo
+	p.eat()
+
+	nameTok, err := p.expect(TOKEN_STRING)
+	if err != nil {
+		return nil, err
+	}
+	stmt := &ast.EffectNotifyStmt{
+		RoomName: nameTok.Value,
+		Payload:  make(map[string]ast.Expression),
+		LineNo:   lineNo,
+	}
+
+	if p.cur().Type != TOKEN_LBRACE {
+		return stmt, nil
+	}
+	p.eat()
+	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("notify payload: expected key, got %q", p.cur().Value)
+		}
+		key := p.eat().Value
+		if _, err := p.expect(TOKEN_COLON); err != nil {
+			return nil, err
+		}
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Payload[key] = val
+		if p.cur().Type == TOKEN_COMMA {
+			p.eat()
+		}
+	}
+	if _, err := p.expect(TOKEN_RBRACE); err != nil {
+		return nil, err
+	}
+	return stmt, nil
+}
+
+func (p *Parser) parseCronBlock() (*ast.CronBlock, error) {
+	if _, err := p.expect(TOKEN_LBRACE); err != nil {
+		return nil, err
+	}
+	cb := &ast.CronBlock{}
+	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("cron: expected cron name, got %q", p.cur().Value)
+		}
+		cronName := p.eat().Value
+
+		if _, err := p.expect(TOKEN_LPAREN); err != nil {
+			return nil, err
+		}
+		cronExprTok, err := p.expect(TOKEN_STRING)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TOKEN_RPAREN); err != nil {
+			return nil, err
+		}
+
+		var body *ast.Block
+		if p.cur().Type == TOKEN_LBRACE {
+			b, err := p.parseBlock()
+			if err != nil {
+				return nil, err
+			}
+			body = b
+		}
+
+		cb.Entries = append(cb.Entries, &ast.CronEntry{
+			Name:     cronName,
+			CronExpr: cronExprTok.Value,
+			Body:     body,
+		})
+	}
+	if _, err := p.expect(TOKEN_RBRACE); err != nil {
+		return nil, err
+	}
+	return cb, nil
+}
+
+func (p *Parser) parseSeedValue() (interface{}, error) {
+	tok := p.cur()
+	p.eat()
+	switch tok.Type {
+	case TOKEN_STRING:
+		return tok.Value, nil
+	case TOKEN_NUMBER:
+		if strings.Contains(tok.Value, ".") {
+			v, _ := strconv.ParseFloat(tok.Value, 64)
+			return v, nil
+		}
+		v, err := strconv.Atoi(tok.Value)
+		if err != nil {
+
+			f, _ := strconv.ParseFloat(tok.Value, 64)
+			return f, nil
+		}
+		return v, nil
+	case TOKEN_TRUE:
+		return true, nil
+	case TOKEN_FALSE:
+		return false, nil
+	case TOKEN_NULL:
+		return nil, nil
+	default:
+		return nil, p.errorf("seed: expected scalar value (string/number/bool/null), got %q", tok.Value)
+	}
 }

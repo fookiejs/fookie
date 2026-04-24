@@ -27,7 +27,7 @@ func TestLexerBasic(t *testing.T) {
 func TestParserModel(t *testing.T) {
 	input := `
 external ValidateToken {
-  input {
+  body {
     token: string
   }
   output {
@@ -44,16 +44,16 @@ model Transaction {
 
   create {
     role {
-      principal = ValidateToken(token: input.token)
+      principal = ValidateToken(token: body.token)
     }
 
     rule {
-      input.amount > 0
-      fromWallet.balance >= input.amount
+      body.amount > 0
+      fromWallet.balance >= body.amount
     }
 
     modify {
-      amount = input.amount
+      amount = body.amount
     }
 
     effect {
@@ -78,7 +78,7 @@ model Transaction {
 func TestParserExternal(t *testing.T) {
 	input := `
 external FraudCheck {
-  input {
+  body {
     userId: id
     amount: number
   }
@@ -98,7 +98,7 @@ external FraudCheck {
 	assert.Equal(t, 1, len(schema.Externals))
 	ext := schema.Externals[0]
 	assert.Equal(t, "FraudCheck", ext.Name)
-	assert.Contains(t, ext.Input, "userId")
+	assert.Contains(t, ext.Body, "userId")
 	assert.Contains(t, ext.Output, "allowed")
 }
 
@@ -106,7 +106,7 @@ func TestParserModule(t *testing.T) {
 	input := `
 module AuthenticateUser {
   role {
-    principal = ValidateToken(token: input.token)
+    principal = ValidateToken(token: body.token)
   }
 
   rule {
@@ -131,11 +131,10 @@ module AuthenticateUser {
 	assert.Equal(t, "AuthenticateUser", schema.Modules[0].Name)
 }
 
-func TestLexerWithComments(t *testing.T) {
+func TestLexerRejectsLineComments(t *testing.T) {
 	input := `
 # This is a comment
 model User {
-  # Another comment
   fields {
     email: string --unique
   }
@@ -144,14 +143,84 @@ model User {
 
 	lexer := parser.NewLexer(input)
 	tokens := lexer.Tokenize()
-
-	hasModel := false
+	hasIllegal := false
 	for _, tok := range tokens {
-		if tok.Type == parser.TOKEN_MODEL {
-			hasModel = true
+		if tok.Type == parser.TOKEN_ILLEGAL {
+			hasIllegal = true
+			break
 		}
 	}
-	assert.True(t, hasModel, "model token should be present; comment lines should be stripped")
+	assert.True(t, hasIllegal)
+	_, err := parser.NewParser(tokens).Parse()
+	require.Error(t, err)
+}
+
+func TestParserCronBlock(t *testing.T) {
+	input := `
+external CleanExpiredListings {
+  body  {}
+  output { expired_count: number }
+}
+
+external RespawnMonsters {
+  body  {}
+  output { spawned_count: number }
+}
+
+cron {
+  CleanExpiredListings("*/1 * * * *") {}
+  RespawnMonsters("*/5 * * * *") {}
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
+
+	require.NoError(t, err)
+	require.Len(t, schema.Crons, 1)
+
+	cb := schema.Crons[0]
+	require.Len(t, cb.Entries, 2)
+
+	assert.Equal(t, "CleanExpiredListings", cb.Entries[0].Name)
+	assert.Equal(t, "*/1 * * * *", cb.Entries[0].CronExpr)
+
+	assert.Equal(t, "RespawnMonsters", cb.Entries[1].Name)
+	assert.Equal(t, "*/5 * * * *", cb.Entries[1].CronExpr)
+}
+
+func TestParserCronBlock_WithEmptyBody(t *testing.T) {
+	input := `
+external NotifyAdmin {
+  body  { zone: string }
+  output { ok: boolean  }
+}
+
+cron {
+  NotifyAdmin("0 9 * * *") {}
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
+
+	require.NoError(t, err)
+	require.Len(t, schema.Crons, 1)
+
+	entry := schema.Crons[0].Entries[0]
+	assert.Equal(t, "NotifyAdmin", entry.Name)
+	assert.Equal(t, "0 9 * * *", entry.CronExpr)
+	require.NotNil(t, entry.Body)
+	assert.Empty(t, entry.Body.Statements)
+}
+
+func TestParserDemoSchema_CronAndSeed(t *testing.T) {
+	schema := parseDemoSchema(t)
+
+	require.NotEmpty(t, schema.Seeds, "banking demo should include seed data")
+	assert.NotEmpty(t, schema.Crons, "banking demo uses cron blocks for transfer simulation")
 }
 
 func TestLexerBraces(t *testing.T) {
@@ -171,4 +240,137 @@ func TestLexerBraces(t *testing.T) {
 		}
 	}
 	assert.Greater(t, lbraces, 0)
+}
+
+func TestParserSeedBlock(t *testing.T) {
+	input := `
+model ItemCategory {
+  fields {
+    name:      string
+    slot:      string
+    max_stack: number
+  }
+  create {
+    rule { body.name != "" }
+    modify {}
+  }
+  read {}
+  update { modify {} }
+  delete {}
+}
+
+seed {
+  ItemCategory(name) {
+    { name: "Weapon",     slot: "main_hand", max_stack: 1  }
+    { name: "Shield",     slot: "off_hand",  max_stack: 1  }
+    { name: "Consumable", slot: "none",      max_stack: 99 }
+  }
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
+
+	require.NoError(t, err)
+	require.Len(t, schema.Seeds, 1)
+
+	sb := schema.Seeds[0]
+	require.Len(t, sb.Entries, 1)
+
+	entry := sb.Entries[0]
+	assert.Equal(t, "ItemCategory", entry.Model)
+	assert.Equal(t, "name", entry.KeyField)
+	require.Len(t, entry.Records, 3)
+
+	assert.Equal(t, "Weapon", entry.Records[0]["name"])
+	assert.Equal(t, "main_hand", entry.Records[0]["slot"])
+	assert.Equal(t, 1, entry.Records[0]["max_stack"])
+
+	assert.Equal(t, "Consumable", entry.Records[2]["name"])
+	assert.Equal(t, 99, entry.Records[2]["max_stack"])
+}
+
+func TestParserSeedBlock_MultipleModels(t *testing.T) {
+	input := `
+model Category {
+  fields { name: string }
+  create { modify {} }
+  read {}
+  update { modify {} }
+  delete {}
+}
+
+model Player {
+  fields { username: string }
+  create { modify {} }
+  read {}
+  update { modify {} }
+  delete {}
+}
+
+seed {
+  Category(name) {
+    { name: "Weapon" }
+    { name: "Armor"  }
+  }
+  Player(username) {
+    { username: "Admin" }
+  }
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
+
+	require.NoError(t, err)
+	require.Len(t, schema.Seeds, 1)
+
+	sb := schema.Seeds[0]
+	require.Len(t, sb.Entries, 2)
+	assert.Equal(t, "Category", sb.Entries[0].Model)
+	assert.Len(t, sb.Entries[0].Records, 2)
+	assert.Equal(t, "Player", sb.Entries[1].Model)
+	assert.Len(t, sb.Entries[1].Records, 1)
+}
+
+func TestParserSeedBlock_ScalarTypes(t *testing.T) {
+	input := `
+model Thing {
+  fields {
+    name:     string
+    quantity: number
+    active:   boolean
+    score:    number
+  }
+  create { modify {} }
+  read {}
+  update { modify {} }
+  delete {}
+}
+
+seed {
+  Thing(name) {
+    { name: "A", quantity: 10, active: true,  score: 3.14 }
+    { name: "B", quantity: 0,  active: false, score: 0.0  }
+  }
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
+
+	require.NoError(t, err)
+	require.Len(t, schema.Seeds, 1)
+	records := schema.Seeds[0].Entries[0].Records
+	require.Len(t, records, 2)
+
+	assert.Equal(t, "A", records[0]["name"])
+	assert.Equal(t, 10, records[0]["quantity"])
+	assert.Equal(t, true, records[0]["active"])
+	assert.Equal(t, 3.14, records[0]["score"])
+
+	assert.Equal(t, false, records[1]["active"])
 }

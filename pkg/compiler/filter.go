@@ -20,15 +20,18 @@ func (sg *SQLGenerator) fieldMeta(model *ast.Model, name string) (col string, ft
 		return "id", ast.TypeUUID, true
 	case "status":
 		return "status", ast.TypeString, true
-	case "createdAt":
+	case "created_at", "createdAt":
 		return "created_at", ast.TypeTimestamp, true
-	case "updatedAt":
+	case "updated_at", "updatedAt":
 		return "updated_at", ast.TypeTimestamp, true
-	default:
-		for _, f := range model.Fields {
-			if f.Name == name {
-				return snake(f.Name), f.Type, true
-			}
+	}
+
+	for _, f := range model.Fields {
+		if f.Name == name {
+			return fieldColumn(f), f.Type, true
+		}
+		if f.Type == ast.TypeRelation && f.Name+"_id" == name {
+			return fieldColumn(f), f.Type, true
 		}
 	}
 	return "", "", false

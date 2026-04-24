@@ -1,17 +1,21 @@
 package tests
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fookiejs/fookie/pkg/ast"
+	"github.com/fookiejs/fookie/pkg/events"
 	fookiegql "github.com/fookiejs/fookie/pkg/graphql"
 	"github.com/fookiejs/fookie/pkg/parser"
+	schemamerge "github.com/fookiejs/fookie/pkg/schema"
 	"github.com/graphql-go/graphql"
 )
 
@@ -20,9 +24,9 @@ func projectRoot() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }
 
-func parseSchema(t *testing.T, name string) *ast.Schema {
+func parseDemoSchema(t *testing.T) *ast.Schema {
 	t.Helper()
-	content, err := os.ReadFile(filepath.Join(projectRoot(), "schemas", name+".fql"))
+	content, err := os.ReadFile(filepath.Join(projectRoot(), "demo", "schema.fql"))
 	require.NoError(t, err)
 	lexer := parser.NewLexer(string(content))
 	tokens := lexer.Tokenize()
@@ -65,163 +69,88 @@ func TestGraphQL_TypeMapping(t *testing.T) {
 	}
 }
 
-func TestGraphQL_BuildSchema_WalletTransfer(t *testing.T) {
-	schema := parseSchema(t, "wallet_transfer")
-	gqlSchema, err := fookiegql.BuildSchema(schema)
+func TestGraphQL_BuildSchema_BankingDemo(t *testing.T) {
+	schema := parseDemoSchema(t)
+	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
-	queryType := gqlSchema.QueryType()
-	require.NotNil(t, queryType)
+	queryFields := gqlSchema.QueryType().Fields()
 
-	queryFields := queryType.Fields()
-	assert.Contains(t, queryFields, "users")
-	assert.Contains(t, queryFields, "wallets")
-	assert.Contains(t, queryFields, "transactions")
-
-	mutationType := gqlSchema.MutationType()
-	require.NotNil(t, mutationType)
-
-	mutFields := mutationType.Fields()
-	assert.Contains(t, mutFields, "createUser")
-	assert.Contains(t, mutFields, "createWallet")
-	assert.Contains(t, mutFields, "createTransaction")
-	assert.Contains(t, mutFields, "updateUser")
-	assert.Contains(t, mutFields, "updateWallet")
-	assert.Contains(t, mutFields, "updateTransaction")
-	assert.Contains(t, mutFields, "updateManyUsers")
-	assert.Contains(t, mutFields, "updateManyWallets")
-
-	assert.NotContains(t, mutFields, "deleteUser")
-	assert.NotContains(t, mutFields, "deleteWallet")
-	assert.NotContains(t, mutFields, "deleteTransaction")
-}
-
-func TestGraphQL_BuildSchema_PaymentProcessing(t *testing.T) {
-	schema := parseSchema(t, "payment_processing")
-	gqlSchema, err := fookiegql.BuildSchema(schema)
-	require.NoError(t, err)
+	assert.Contains(t, queryFields, "all_bank_wallet")
+	assert.Contains(t, queryFields, "all_bank_user")
+	assert.Contains(t, queryFields, "all_wallet_transfer")
+	assert.Contains(t, queryFields, "all_atm_transaction")
 
 	mutFields := gqlSchema.MutationType().Fields()
-	assert.Contains(t, mutFields, "createMerchant")
-	assert.Contains(t, mutFields, "createPaymentMethod")
-	assert.Contains(t, mutFields, "createPaymentRecord")
-	assert.Contains(t, mutFields, "createRefund")
 
-	assert.NotContains(t, mutFields, "updateMerchant")
+	assert.Contains(t, mutFields, "create_bank_wallet")
+	assert.Contains(t, mutFields, "create_bank_user")
+	assert.Contains(t, mutFields, "create_wallet_transfer")
+	assert.Contains(t, mutFields, "create_atm_transaction")
+
+	assert.Contains(t, mutFields, "update_bank_wallet")
+	assert.Contains(t, mutFields, "update_bank_user")
+	assert.Contains(t, mutFields, "update_wallet_transfer")
+	assert.Contains(t, mutFields, "update_atm_transaction")
+
+	assert.Contains(t, mutFields, "delete_bank_wallet")
+	assert.Contains(t, mutFields, "delete_bank_user")
+	assert.Contains(t, mutFields, "delete_wallet_transfer")
+	assert.Contains(t, mutFields, "delete_atm_transaction")
 }
 
-func TestGraphQL_BuildSchema_UserOnboarding(t *testing.T) {
-	schema := parseSchema(t, "user_onboarding")
-	gqlSchema, err := fookiegql.BuildSchema(schema)
+func TestGraphQL_RelationFields_BankUser(t *testing.T) {
+	schema := parseDemoSchema(t)
+	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
-	mutFields := gqlSchema.MutationType().Fields()
-	assert.Contains(t, mutFields, "createAccount")
-	assert.Contains(t, mutFields, "createProfile")
-	assert.Contains(t, mutFields, "createKycVerification")
-	assert.Contains(t, mutFields, "createVerificationLog")
-	assert.Contains(t, mutFields, "updateKycVerification")
+	queryFields := gqlSchema.QueryType().Fields()
+	userField, ok := queryFields["all_bank_user"]
+	require.True(t, ok)
+
+	userObj := unwrapObject(userField.Type)
+	require.NotNil(t, userObj)
+
+	userFields := userObj.Fields()
+	assert.Contains(t, userFields, "wallet_id")
+	assert.Contains(t, userFields, "wallet")
 }
 
-func TestGraphQL_ExtraInputFields_Transaction(t *testing.T) {
-	schema := parseSchema(t, "wallet_transfer")
-
-	var txModel *ast.Model
-	for _, m := range schema.Models {
-		if m.Name == "Transaction" {
-			txModel = m
-			break
-		}
-	}
-	require.NotNil(t, txModel)
-
-	createOp := txModel.CRUD["create"]
-	require.NotNil(t, createOp)
-
-	extras := fookiegql.DetectExtraInputFields(txModel, createOp, schema)
-
-	extraNames := map[string]bool{}
-	for _, e := range extras {
-		extraNames[e.Name] = true
-	}
-
-	assert.True(t, extraNames["recipientEmail"], "recipientEmail should be detected as extra input")
-	assert.False(t, extraNames["token"], "token should be excluded")
-	assert.False(t, extraNames["amount"], "amount is a model field, should not be extra")
-	assert.False(t, extraNames["fromWalletId"], "fromWalletId is a model field")
-}
-
-func TestGraphQL_ExtraInputFields_PaymentRecord(t *testing.T) {
-	schema := parseSchema(t, "payment_processing")
-
-	var prModel *ast.Model
-	for _, m := range schema.Models {
-		if m.Name == "PaymentRecord" {
-			prModel = m
-			break
-		}
-	}
-	require.NotNil(t, prModel)
-
-	createOp := prModel.CRUD["create"]
-	require.NotNil(t, createOp)
-
-	extras := fookiegql.DetectExtraInputFields(prModel, createOp, schema)
-
-	extraNames := map[string]bool{}
-	for _, e := range extras {
-		extraNames[e.Name] = true
-	}
-
-	assert.True(t, extraNames["apiKey"], "apiKey should be detected (used in role block)")
-	assert.True(t, extraNames["webhookUrl"], "webhookUrl should be detected (used in effect block)")
-	assert.False(t, extraNames["cardToken"], "cardToken is a model field")
-	assert.False(t, extraNames["amount"], "amount is a model field")
-}
-
-func TestGraphQL_AggregateReadDetection(t *testing.T) {
-	schema := parseSchema(t, "wallet_transfer")
-
-	for _, model := range schema.Models {
-		op, ok := model.CRUD["read"]
-		if !ok {
-			continue
-		}
-		switch model.Name {
-		case "Transaction":
-			gqlSchema, err := fookiegql.BuildSchema(schema)
-			require.NoError(t, err)
-			qf := gqlSchema.QueryType().Fields()
-			txField := qf["transactions"]
-			require.NotNil(t, txField)
-			assert.NotEqual(t, "NonNull", txField.Type.Name())
-		case "User":
-			assert.Empty(t, op.Select)
-		}
-	}
-}
-
-func TestGraphQL_ReadWhereArg(t *testing.T) {
-	schema := parseSchema(t, "wallet_transfer")
-	gqlSchema, err := fookiegql.BuildSchema(schema)
+func TestGraphQL_FilterArg(t *testing.T) {
+	schema := parseDemoSchema(t)
+	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
-	qf := gqlSchema.QueryType().Fields()
-	users := qf["users"]
-	require.NotNil(t, users)
-	var hasWhere bool
-	for _, a := range users.Args {
-		if a.Name() == "where" {
-			hasWhere = true
-			break
+	queryFields := gqlSchema.QueryType().Fields()
+	for _, name := range []string{"all_bank_user", "all_bank_wallet", "all_wallet_transfer"} {
+		field, ok := queryFields[name]
+		require.True(t, ok, "query field %s not found", name)
+		hasFilter := false
+		for _, a := range field.Args {
+			if a.Name() == "filter" {
+				hasFilter = true
+				break
+			}
 		}
+		assert.True(t, hasFilter, "%s should accept optional filter argument", name)
 	}
-	assert.True(t, hasWhere, "users query should accept optional where argument")
+}
+
+func unwrapObject(t graphql.Output) *graphql.Object {
+	switch tt := t.(type) {
+	case *graphql.NonNull:
+		return unwrapObject(tt.OfType)
+	case *graphql.List:
+		return unwrapObject(tt.OfType)
+	case *graphql.Object:
+		return tt
+	}
+	return nil
 }
 
 func TestGraphQL_Introspection(t *testing.T) {
-	schema := parseSchema(t, "wallet_transfer")
-	gqlSchema, err := fookiegql.BuildSchema(schema)
+	schema := parseDemoSchema(t)
+	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
 	result := graphql.Do(graphql.Params{
@@ -234,4 +163,92 @@ func TestGraphQL_Introspection(t *testing.T) {
 	schemaData := data["__schema"].(map[string]interface{})
 	assert.Equal(t, "Query", schemaData["queryType"].(map[string]interface{})["name"])
 	assert.Equal(t, "Mutation", schemaData["mutationType"].(map[string]interface{})["name"])
+}
+
+func TestGraphQL_Introspection_SubscriptionWithRoomBus(t *testing.T) {
+	schema := parseDemoSchema(t)
+	require.NoError(t, schemamerge.MergeBuiltinRooms(schema))
+	eb := events.NewBus()
+	rb := events.NewRoomBus()
+	gqlSchema, err := fookiegql.BuildSchema(schema, eb, rb)
+	require.NoError(t, err)
+
+	result := graphql.Do(graphql.Params{
+		Schema:        gqlSchema,
+		RequestString: `{ __schema { subscriptionType { name } } }`,
+	})
+	require.Empty(t, result.Errors)
+	data := result.Data.(map[string]interface{})
+	st := data["__schema"].(map[string]interface{})["subscriptionType"].(map[string]interface{})
+	assert.Equal(t, "Subscription", st["name"])
+}
+
+func TestGraphQL_RoomSubscription_stream(t *testing.T) {
+	schema := parseDemoSchema(t)
+	require.NoError(t, schemamerge.MergeBuiltinRooms(schema))
+	eb := events.NewBus()
+	rb := events.NewRoomBus()
+	gqlSchema, err := fookiegql.BuildSchema(schema, eb, rb)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		rb.Publish("r1", map[string]interface{}{
+			"room_id": "r1",
+			"method":  "updated",
+			"model":   "Room",
+			"payload": map[string]interface{}{
+				"query": "{ all_room { id } }",
+				"body":  `{"name":"Lobby"}`,
+			},
+		})
+	}()
+
+	ch := graphql.Subscribe(graphql.Params{
+		Context:       ctx,
+		Schema:        gqlSchema,
+		RequestString: `subscription { room_graphql_message(room_id: "r1") { room_id method model payload { query body } } }`,
+	})
+	var saw bool
+	for res := range ch {
+		require.Empty(t, res.Errors, "%+v", res.Errors)
+		if res.Data != nil {
+			saw = true
+			break
+		}
+	}
+	require.True(t, saw, "expected at least one subscription payload")
+}
+
+func TestGraphQL_EntityEvents_subscription(t *testing.T) {
+	schema := parseDemoSchema(t)
+	eb := events.NewBus()
+	gqlSchema, err := fookiegql.BuildSchema(schema, eb, nil)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		eb.PublishCRUD("created", "WalletTransfer", "id-1", map[string]interface{}{"x": 1})
+	}()
+
+	ch := graphql.Subscribe(graphql.Params{
+		Context:       ctx,
+		Schema:        gqlSchema,
+		RequestString: `subscription { entity_events(model: "WalletTransfer") { op model id ts } }`,
+	})
+	var saw bool
+	for res := range ch {
+		require.Empty(t, res.Errors, "%+v", res.Errors)
+		if res.Data != nil {
+			saw = true
+			break
+		}
+	}
+	require.True(t, saw)
 }

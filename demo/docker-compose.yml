@@ -1,0 +1,6 @@
+name: fookie
+
+include:
+  - path: ../deploy/compose/postgres.yml
+  - path: ../deploy/compose/observability.yml
+  - path: ../deploy/compose/apps.yml

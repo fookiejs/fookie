@@ -1,0 +1,134 @@
+model BankWallet {
+  fields {
+    address: string
+    balance: number
+    world_x: number
+    world_y: number
+  }
+
+  create {
+    role { requireAdminKey(request.admin_key) }
+    rule {
+      notEmptyString(body.address)
+      body.balance >= 0
+      body.world_x >= 0 body.world_y >= 0
+      body.world_x <= 10000 body.world_y <= 10000
+    }
+    modify {}
+  }
+
+  read {}
+
+  update {
+    role { requireAdminKey(request.admin_key) }
+    modify {}
+  }
+
+  delete {
+    role { requireAdminKey(request.admin_key) }
+  }
+}
+
+model BankUser {
+  fields {
+    display_name: string
+    wallet: relation(BankWallet)
+    world_x: number
+    world_y: number
+  }
+
+  create {
+    role { requireAdminKey(request.admin_key) }
+    rule {
+      notEmptyString(body.display_name)
+      body.wallet_id != null
+      body.world_x >= 0 body.world_y >= 0
+      body.world_x <= 10000 body.world_y <= 10000
+    }
+    modify {}
+  }
+
+  read {}
+
+  update {
+    role { requireAdminKey(request.admin_key) }
+    modify {}
+  }
+
+  delete {
+    role { requireAdminKey(request.admin_key) }
+  }
+}
+
+model WalletTransfer {
+  fields {
+    from_wallet: relation(BankWallet)
+    to_wallet:   relation(BankWallet)
+    amount:      number
+    transfer_status: string
+  }
+
+  create {
+    role { requireAdminKey(request.admin_key) }
+    rule {
+      body.from_wallet_id != null
+      body.to_wallet_id   != null
+      body.amount         > 0
+      notEmptyString(body.transfer_status)
+    }
+    modify {}
+  }
+
+  read {}
+
+  update {
+    role { requireAdminKey(request.admin_key) }
+    modify {}
+  }
+
+  delete {
+    role { requireAdminKey(request.admin_key) }
+  }
+}
+
+model AtmTransaction {
+  fields {
+    wallet: relation(BankWallet)
+    op:     string
+    amount: number
+    txn_status: string
+  }
+
+  create {
+    role { requireAdminKey(request.admin_key) }
+    rule {
+      body.wallet_id != null
+      notEmptyString(body.op)
+      body.amount > 0
+      notEmptyString(body.txn_status)
+    }
+    modify {}
+  }
+
+  read {}
+
+  update {
+    role { requireAdminKey(request.admin_key) }
+    modify {}
+  }
+
+  delete {
+    role { requireAdminKey(request.admin_key) }
+  }
+}
+
+seed {
+  BankWallet(address) {
+    { address: "WLT-DEMO-001", balance: 25000, world_x: 120, world_y: 220 }
+    { address: "WLT-DEMO-002", balance: 18000, world_x: 300, world_y: 220 }
+    { address: "WLT-DEMO-003", balance: 32000, world_x: 480, world_y: 220 }
+    { address: "WLT-DEMO-004", balance: 9000,  world_x: 660, world_y: 220 }
+    { address: "WLT-DEMO-005", balance: 41000, world_x: 840, world_y: 220 }
+  }
+}
+

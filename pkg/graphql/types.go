@@ -34,10 +34,10 @@ func mapFieldTypeToInput(ft ast.FieldType) graphql.Input {
 
 func systemFields() graphql.Fields {
 	return graphql.Fields{
-		"id":        &graphql.Field{Type: graphql.ID, Resolve: fieldResolver("id")},
-		"status":    &graphql.Field{Type: graphql.String, Resolve: fieldResolver("status")},
-		"createdAt": &graphql.Field{Type: graphql.String, Resolve: fieldResolver("created_at")},
-		"updatedAt": &graphql.Field{Type: graphql.String, Resolve: fieldResolver("updated_at")},
+		"id":         &graphql.Field{Type: graphql.ID, Resolve: fieldResolver("id")},
+		"status":     &graphql.Field{Type: graphql.String, Resolve: fieldResolver("status")},
+		"created_at": &graphql.Field{Type: graphql.String, Resolve: fieldResolver("created_at")},
+		"updated_at": &graphql.Field{Type: graphql.String, Resolve: fieldResolver("updated_at")},
 	}
 }
 

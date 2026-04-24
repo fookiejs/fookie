@@ -62,22 +62,27 @@ func filterInputForField(ft ast.FieldType, str, num, boolF, id *graphql.InputObj
 	}
 }
 
-func buildModelWhereInput(model *ast.Model, str, num, boolF, id *graphql.InputObject) *graphql.InputObject {
+func buildModelFilterInput(model *ast.Model, str, num, boolF, id *graphql.InputObject) *graphql.InputObject {
 	var t *graphql.InputObject
 	t = graphql.NewInputObject(graphql.InputObjectConfig{
-		Name: model.Name + "WhereInput",
+		Name: model.Name + "FilterInput",
 		Fields: (graphql.InputObjectConfigFieldMapThunk)(func() graphql.InputObjectConfigFieldMap {
 			fm := graphql.InputObjectConfigFieldMap{
-				"AND": &graphql.InputObjectFieldConfig{Type: graphql.NewList(graphql.NewNonNull(t))},
-				"OR":  &graphql.InputObjectFieldConfig{Type: graphql.NewList(graphql.NewNonNull(t))},
-				"NOT": &graphql.InputObjectFieldConfig{Type: t},
-				"id":  &graphql.InputObjectFieldConfig{Type: id},
-				"status":    &graphql.InputObjectFieldConfig{Type: str},
-				"createdAt": &graphql.InputObjectFieldConfig{Type: str},
-				"updatedAt": &graphql.InputObjectFieldConfig{Type: str},
+				"AND":        &graphql.InputObjectFieldConfig{Type: graphql.NewList(graphql.NewNonNull(t))},
+				"OR":         &graphql.InputObjectFieldConfig{Type: graphql.NewList(graphql.NewNonNull(t))},
+				"NOT":        &graphql.InputObjectFieldConfig{Type: t},
+				"id":         &graphql.InputObjectFieldConfig{Type: id},
+				"status":     &graphql.InputObjectFieldConfig{Type: str},
+				"created_at": &graphql.InputObjectFieldConfig{Type: str},
+				"updated_at": &graphql.InputObjectFieldConfig{Type: str},
 			}
 			for _, f := range model.Fields {
-				fm[f.Name] = &graphql.InputObjectFieldConfig{
+
+				key := f.Name
+				if f.Type == ast.TypeRelation {
+					key = f.Name + "_id"
+				}
+				fm[key] = &graphql.InputObjectFieldConfig{
 					Type: filterInputForField(f.Type, str, num, boolF, id),
 				}
 			}

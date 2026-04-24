@@ -1,0 +1,58 @@
+external RoomGraphQLNotify {
+  body {}
+  output {
+    delivered: boolean
+  }
+}
+
+model Room {
+  fields {
+    name: string
+    metadata: json
+  }
+
+  create {
+    role { true }
+    rule { notEmptyString(body.name) }
+    modify {}
+  }
+
+  read {}
+
+  update {
+    role { true }
+    modify {}
+  }
+
+  delete {
+    role { true }
+  }
+}
+
+model RoomMember {
+  fields {
+    room: relation(Room)
+    principal_id: string
+    role_name: string
+  }
+
+  create {
+    role { true }
+    rule {
+      body.room_id != null
+      notEmptyString(body.principal_id)
+    }
+    modify {}
+  }
+
+  read {}
+
+  update {
+    role { true }
+    modify {}
+  }
+
+  delete {
+    role { true }
+  }
+}

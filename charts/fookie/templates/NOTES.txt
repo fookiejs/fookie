@@ -1,0 +1,12 @@
+1. Build and push images for your registry, e.g.:
+   docker build -f docker/Dockerfile.server -t YOUR_REGISTRY/fookie-server:TAG .
+   docker build -f docker/Dockerfile.worker -t YOUR_REGISTRY/fookie-worker:TAG .
+
+2. Install with your database URL (Postgres must exist):
+   helm install myapp ./charts/fookie --set database.url=postgres://user:pass@host:5432/dbname?sslmode=require \
+     --set server.image=YOUR_REGISTRY/fookie-server --set server.tag=TAG \
+     --set worker.image=YOUR_REGISTRY/fookie-worker --set worker.tag=TAG
+
+3. Replace bundled schema: copy your schema to charts/fookie/files/schema.fql or use helm --set-file (Helm 3.14+ file patterns).
+
+4. Observability: set observability.otlpEndpoint to your OTel collector Service DNS. Postgres/Tempo/Grafana are not part of this chart; use your platform stack or Rancher Fleet to deploy them.

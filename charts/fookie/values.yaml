@@ -1,0 +1,24 @@
+server:
+  image: fookie-server
+  tag: latest
+  pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8080
+
+worker:
+  image: fookie-worker
+  tag: latest
+  pullPolicy: IfNotPresent
+  replicas: 1
+
+database:
+  url: "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"
+
+observability:
+  otlpEndpoint: "otel-collector:4318"
+
+schema:
+  mountPath: /app/schema
+  fileName: schema.fql

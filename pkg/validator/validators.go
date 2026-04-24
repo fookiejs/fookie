@@ -5,45 +5,278 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 type ValidatorFunc func(args ...interface{}) (interface{}, error)
 
 var builtins = map[string]ValidatorFunc{
-	"isEmail":        IsEmail,
-	"isRFC5321":      IsRFC5321,
-	"isRFC5322":      IsRFC5322,
-	"isURL":          IsURL,
-	"isHTTP":         IsHTTP,
-	"isHTTPS":        IsHTTPS,
-	"isE164":         IsE164,
-	"isValidPhone":   IsValidPhone,
-	"getPhoneCountry": GetPhoneCountry,
-	"isValidUUID":    IsValidUUID,
-	"getUUIDVersion": GetUUIDVersion,
+	"notEmptyString":    NotEmptyString,
+	"isEmail":           IsEmail,
+	"isRFC5321":         IsRFC5321,
+	"isRFC5322":         IsRFC5322,
+	"isURL":             IsURL,
+	"isHTTP":            IsHTTP,
+	"isHTTPS":           IsHTTPS,
+	"isE164":            IsE164,
+	"isValidPhone":      IsValidPhone,
+	"getPhoneCountry":   GetPhoneCountry,
+	"isValidUUID":       IsValidUUID,
+	"getUUIDVersion":    GetUUIDVersion,
 	"isValidCoordinate": IsValidCoordinate,
-	"isWithinBounds": IsWithinBounds,
-	"getDistance":    GetDistance,
-	"isHexColor":     IsHexColor,
-	"isRGBColor":     IsRGBColor,
-	"isHSLColor":     IsHSLColor,
-	"isISOCurrency":  IsISOCurrency,
-	"isValidLocale":  IsValidLocale,
-	"getBCP47":       GetBCP47,
-	"isValidIBAN":    IsValidIBAN,
-	"getIBANCountry": GetIBANCountry,
-	"getIBANChecksum": GetIBANChecksum,
-	"isIPv4":         IsIPv4,
-	"isIPv6":         IsIPv6,
-	"isPrivateIP":    IsPrivateIP,
-	"getIPVersion":   GetIPVersion,
+	"isWithinBounds":    IsWithinBounds,
+	"getDistance":       GetDistance,
+	"isHexColor":        IsHexColor,
+	"isRGBColor":        IsRGBColor,
+	"isHSLColor":        IsHSLColor,
+	"isISOCurrency":     IsISOCurrency,
+	"isValidLocale":     IsValidLocale,
+	"getBCP47":          GetBCP47,
+	"isValidIBAN":       IsValidIBAN,
+	"getIBANCountry":    GetIBANCountry,
+	"getIBANChecksum":   GetIBANChecksum,
+	"isIPv4":            IsIPv4,
+	"isIPv6":            IsIPv6,
+	"isPrivateIP":       IsPrivateIP,
+	"getIPVersion":      GetIPVersion,
+
+	"notBlank":         NotEmptyString,
+	"isBlank":          IsBlank,
+	"notNil":           NotNil,
+	"isNil":            IsNil,
+	"between":          Between,
+	"nonNegative":      NonNegative,
+	"isPositive":       IsPositive,
+	"hasPrefix":        HasPrefix,
+	"hasSuffix":        HasSuffix,
+	"contains":         Contains,
+	"equalsIgnoreCase": EqualsIgnoreCase,
+	"minLen":           MinLen,
+	"maxLen":           MaxLen,
+	"startsWithAny":    StartsWithAny,
+	"oneOf":            OneOf,
+
+	"requireAdminKey": RequireAdminKey,
+	"nobody":          Nobody,
+
+	"log": nil,
+}
+
+func BuiltinRegistered(name string) bool {
+	_, ok := builtins[name]
+	return ok
 }
 
 func GetBuiltin(name string) (ValidatorFunc, bool) {
 	fn, ok := builtins[name]
 	return fn, ok
+}
+
+func RequireAdminKey(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("requireAdminKey requires 1 argument (the presented key)")
+	}
+	want := strings.TrimSpace(os.Getenv("FOOKEE_ADMIN_KEY"))
+	if want == "" {
+		return false, nil
+	}
+	got, ok := args[0].(string)
+	if !ok {
+		return false, nil
+	}
+	return strings.TrimSpace(got) == want, nil
+}
+
+func Nobody(args ...interface{}) (interface{}, error) {
+	_ = args
+	return false, nil
+}
+
+func NotEmptyString(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("notEmptyString requires 1 argument")
+	}
+	s, ok := args[0].(string)
+	if !ok || s == "" {
+		return false, nil
+	}
+	return strings.TrimSpace(s) != "", nil
+}
+
+func IsBlank(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("isBlank requires 1 argument")
+	}
+	if args[0] == nil {
+		return true, nil
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return false, nil
+	}
+	return strings.TrimSpace(s) == "", nil
+}
+
+func NotNil(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("notNil requires 1 argument")
+	}
+	return args[0] != nil, nil
+}
+
+func IsNil(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("isNil requires 1 argument")
+	}
+	return args[0] == nil, nil
+}
+
+func Between(args ...interface{}) (interface{}, error) {
+	if len(args) < 3 {
+		return false, fmt.Errorf("between requires 3 arguments (n, min, max)")
+	}
+	v, ok1 := toFloat(args[0])
+	lo, ok2 := toFloat(args[1])
+	hi, ok3 := toFloat(args[2])
+	if !ok1 || !ok2 || !ok3 {
+		return false, nil
+	}
+	return v >= lo && v <= hi, nil
+}
+
+func NonNegative(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("nonNegative requires 1 argument")
+	}
+	v, ok := toFloat(args[0])
+	if !ok {
+		return false, nil
+	}
+	return v >= 0, nil
+}
+
+func IsPositive(args ...interface{}) (interface{}, error) {
+	if len(args) < 1 {
+		return false, fmt.Errorf("isPositive requires 1 argument")
+	}
+	v, ok := toFloat(args[0])
+	if !ok {
+		return false, nil
+	}
+	return v > 0, nil
+}
+
+func HasPrefix(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("hasPrefix requires 2 arguments (s, prefix)")
+	}
+	s, ok1 := args[0].(string)
+	p, ok2 := args[1].(string)
+	if !ok1 || !ok2 {
+		return false, nil
+	}
+	return strings.HasPrefix(s, p), nil
+}
+
+func HasSuffix(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("hasSuffix requires 2 arguments (s, suffix)")
+	}
+	s, ok1 := args[0].(string)
+	suf, ok2 := args[1].(string)
+	if !ok1 || !ok2 {
+		return false, nil
+	}
+	return strings.HasSuffix(s, suf), nil
+}
+
+func Contains(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("contains requires 2 arguments (s, substr)")
+	}
+	s, ok1 := args[0].(string)
+	sub, ok2 := args[1].(string)
+	if !ok1 || !ok2 {
+		return false, nil
+	}
+	return strings.Contains(s, sub), nil
+}
+
+func EqualsIgnoreCase(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("equalsIgnoreCase requires 2 arguments (a, b)")
+	}
+	a, ok1 := args[0].(string)
+	b, ok2 := args[1].(string)
+	if !ok1 || !ok2 {
+		return false, nil
+	}
+	return strings.EqualFold(a, b), nil
+}
+
+func MinLen(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("minLen requires 2 arguments (s, n)")
+	}
+	s, ok1 := args[0].(string)
+	nf, ok2 := toFloat(args[1])
+	if !ok1 || !ok2 {
+		return false, nil
+	}
+	n := int(nf)
+	if n < 0 {
+		return false, nil
+	}
+	return utf8.RuneCountInString(s) >= n, nil
+}
+
+func MaxLen(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("maxLen requires 2 arguments (s, n)")
+	}
+	s, ok1 := args[0].(string)
+	nf, ok2 := toFloat(args[1])
+	if !ok1 || !ok2 {
+		return false, nil
+	}
+	n := int(nf)
+	if n < 0 {
+		return false, nil
+	}
+	return utf8.RuneCountInString(s) <= n, nil
+}
+
+func StartsWithAny(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("startsWithAny requires at least 2 arguments (s, prefix, ...)")
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return false, nil
+	}
+	for _, a := range args[1:] {
+		p, ok := a.(string)
+		if ok && strings.HasPrefix(s, p) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func OneOf(args ...interface{}) (interface{}, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("oneOf requires at least 2 arguments (value, option, ...)")
+	}
+	v := args[0]
+	for _, opt := range args[1:] {
+		if v == opt {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func IsEmail(args ...interface{}) (interface{}, error) {
@@ -165,7 +398,7 @@ func GetPhoneCountry(args ...interface{}) (interface{}, error) {
 		return "", nil
 	}
 	countryMap := map[string]string{
-		"+1": "US",
+		"+1":  "US",
 		"+44": "GB",
 		"+33": "FR",
 		"+49": "DE",

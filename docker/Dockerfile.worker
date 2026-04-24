@@ -1,4 +1,3 @@
-# Build stage
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
@@ -10,7 +9,6 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o worker ./cmd/worker
 
-# Runtime stage
 FROM alpine:3.18
 
 RUN apk --no-cache add ca-certificates
@@ -20,6 +18,9 @@ WORKDIR /app
 COPY --from=builder /app/worker .
 
 ENV DB_URL=postgres://localhost/fookie
+ENV SCHEMA_PATH=/app/demo/schema.fql
 ENV POLL_INTERVAL=5s
+
+COPY --from=builder /app/demo/schema.fql /app/demo/schema.fql
 
 CMD ["/app/worker"]

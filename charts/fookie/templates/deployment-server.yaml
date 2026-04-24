@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fookie.fullname" . }}-server
+  labels:
+    {{- include "fookie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      {{- include "fookie.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "fookie.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+    spec:
+      containers:
+        - name: server
+          image: "{{ .Values.server.image }}:{{ .Values.server.tag }}"
+          imagePullPolicy: {{ .Values.server.pullPolicy }}
+          command: ["/bin/sh", "-c", "exec /app/server -db \"$DB_URL\""]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fookie.fullname" . }}-database
+                  key: url
+            - name: PORT
+              value: ":8080"
+            - name: SCHEMA_PATH
+              value: "{{ .Values.schema.mountPath }}/{{ .Values.schema.fileName }}"
+            - name: OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+          volumeMounts:
+            - name: schema
+              mountPath: {{ .Values.schema.mountPath }}
+              readOnly: true
+      volumes:
+        - name: schema
+          configMap:
+            name: {{ include "fookie.fullname" . }}-schema

@@ -1,10 +1,13 @@
-.PHONY: help build test test-unit test-integration run-server run-worker postgres-up postgres-down docker-up docker-down clean parser
+COMPOSE_DEMO = -f demo/docker-compose.yml -f demo/compose.demo.yml
+COMPOSE_PLATFORM = -f deploy/compose/postgres.yml -f deploy/compose/observability.yml -f deploy/compose/apps.yml
+
+.PHONY: help build build-fookie test test-unit test-integration run-server run-worker postgres-up postgres-down docker-up docker-down docker-clean clean parser
 
 help:
 	@echo "Fookie Framework - Build Commands"
 	@echo ""
 	@echo "Development:"
-	@echo "  make build - Build all binaries"
+	@echo "  make build - Build all binaries (includes bin/fookie compose helper)"
 	@echo "  make test              - Run all Go tests (pkg + tests/*)"
 	@echo "  make test-unit         - Fast tests only (no Docker)"
 	@echo "  make test-integration  - Integration tests (requires Docker for Testcontainers)"
@@ -19,7 +22,7 @@ help:
 	@echo "  make run-worker        - Run worker locally (requires DB)"
 	@echo ""
 	@echo "Docker (full stack):"
-	@echo "  make docker-up         - Build images and start postgres + server + worker"
+	@echo "  make docker-up         - Platform compose + demo overrides (Postgres, observability, server, worker)"
 	@echo "  make docker-down       - Stop Docker containers"
 	@echo "  make docker-clean      - Remove containers and volumes"
 	@echo ""
@@ -28,8 +31,11 @@ help:
 	@echo "  make fmt               - Format code"
 	@echo "  make clean             - Clean build artifacts"
 
-# Build targets
-build: build-server build-parser build-worker
+build: build-server build-parser build-worker build-fookie
+
+build-fookie:
+	@echo "Building fookie CLI..."
+	go build -o bin/fookie ./cmd/fookie
 
 build-server:
 	@echo "Building server..."
@@ -43,7 +49,6 @@ build-worker:
 	@echo "Building worker..."
 	go build -o bin/worker ./cmd/worker
 
-# Test targets (integration tests use Testcontainers — Docker must be running)
 test:
 	@echo "Running all tests..."
 	go test -count=1 -v -cover ./pkg/... ./tests/...
@@ -64,62 +69,58 @@ test-compiler:
 	@echo "Testing compiler..."
 	go test -v -run TestSQLGenerator ./tests/unit/...
 
-# Run targets
 run-server: build-server
 	@echo "Starting server..."
-	./bin/server -schema schemas/wallet_transfer.fql -db "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
+	./bin/server -db "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
 
 run-worker: build-worker
 	@echo "Starting worker..."
 	./bin/worker -db "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
 
-# Start only Postgres from docker-compose (matches default -db URL in cmd/server and cmd/worker)
 postgres-up:
-	docker-compose up -d postgres
+	docker compose -f deploy/compose/postgres.yml up -d postgres
 	@echo "Postgres ready at postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"
 
 postgres-down:
-	docker-compose stop postgres
+	docker compose -f deploy/compose/postgres.yml stop postgres
 
 run-parser: build-parser
-	@echo "Running parser on wallet_transfer.fql..."
-	./bin/parser -schema schemas/wallet_transfer.fql -sql
+	@echo "Running parser on demo/schema.fql..."
+	./bin/parser -schema demo/schema.fql -sql
 
-# Docker targets
 docker-build:
 	@echo "Building Docker images..."
-	docker-compose build
+	docker compose $(COMPOSE_DEMO) build
 
 docker-up: docker-build
 	@echo "Starting Docker containers..."
-	docker-compose up -d
+	docker compose $(COMPOSE_DEMO) up -d
 	@echo "Waiting for services to start..."
 	@sleep 5
 	@echo "Services are up!"
-	@docker-compose ps
+	@docker compose $(COMPOSE_DEMO) ps
 
 docker-down:
 	@echo "Stopping Docker containers..."
-	docker-compose down
+	docker compose $(COMPOSE_DEMO) down
 
 docker-logs-server:
-	docker-compose logs -f fookie-server
+	docker compose $(COMPOSE_DEMO) logs -f fookie-server
 
 docker-logs-worker:
-	docker-compose logs -f fookie-worker
+	docker compose $(COMPOSE_DEMO) logs -f fookie-worker
 
 docker-logs-postgres:
-	docker-compose logs -f postgres
+	docker compose $(COMPOSE_DEMO) logs -f postgres
 
 docker-clean: docker-down
 	@echo "Cleaning Docker volumes..."
-	docker-compose down -v
+	docker compose $(COMPOSE_DEMO) down -v
 	@echo "Docker cleanup complete"
 
 docker-shell-postgres:
-	docker-compose exec postgres psql -U fookie -d fookie
+	docker compose $(COMPOSE_DEMO) exec postgres psql -U fookie -d fookie
 
-# Code quality targets
 fmt:
 	@echo "Formatting code..."
 	go fmt ./...
@@ -128,10 +129,9 @@ lint:
 	@echo "Running linter..."
 	golangci-lint run ./...
 
-# Utility targets
 generate-migrations:
 	@echo "Generating migrations from schema..."
-	./bin/parser -schema schemas/wallet_transfer.fql -sql > migrations/001_initial.sql
+	./bin/parser -schema demo/schema.fql -sql > migrations/001_initial.sql
 
 deps:
 	go mod download

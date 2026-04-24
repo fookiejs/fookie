@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fookie.fullname" . }}-worker
+  labels:
+    {{- include "fookie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "fookie.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "fookie.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.worker.image }}:{{ .Values.worker.tag }}"
+          imagePullPolicy: {{ .Values.worker.pullPolicy }}
+          command: ["/bin/sh", "-c", "exec /app/worker -db \"$DB_URL\""]
+          env:
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fookie.fullname" . }}-database
+                  key: url
+            - name: SCHEMA_PATH
+              value: "{{ .Values.schema.mountPath }}/{{ .Values.schema.fileName }}"
+            - name: OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+          volumeMounts:
+            - name: schema
+              mountPath: {{ .Values.schema.mountPath }}
+              readOnly: true
+      volumes:
+        - name: schema
+          configMap:
+            name: {{ include "fookie.fullname" . }}-schema

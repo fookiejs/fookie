@@ -86,6 +86,9 @@ func walkBlock(block *ast.Block, collector map[string]bool) {
 			walkExpr(s.Value, collector)
 		case *ast.PredicateExpr:
 			walkExpr(s.Expr, collector)
+		case *ast.ForIn:
+			walkExpr(s.Iterable, collector)
+			walkBlock(s.Body, collector)
 		}
 	}
 }
@@ -95,6 +98,10 @@ func walkExpr(expr ast.Expression, collector map[string]bool) {
 		return
 	}
 	switch e := expr.(type) {
+	case *ast.ArrayLiteral:
+		for _, it := range e.Items {
+			walkExpr(it, collector)
+		}
 	case *ast.FieldAccess:
 		if e.Object == "input" && len(e.Fields) >= 1 {
 			collector[e.Fields[0]] = true
@@ -127,7 +134,7 @@ func inferTypes(schema *ast.Schema, op *ast.Operation, uses []string) map[string
 
 	extInputMap := map[string]map[string]string{}
 	for _, ext := range schema.Externals {
-		extInputMap[ext.Name] = ext.Input
+		extInputMap[ext.Name] = ext.Body
 	}
 
 	var blocks []*ast.Block
@@ -167,6 +174,11 @@ func inferFromStatement(stmt ast.Statement, extInputMap map[string]map[string]st
 		inferFromExpr(s.Value, extInputMap, hints)
 	case *ast.PredicateExpr:
 		inferFromExpr(s.Expr, extInputMap, hints)
+	case *ast.ForIn:
+		inferFromExpr(s.Iterable, extInputMap, hints)
+		for _, st := range s.Body.Statements {
+			inferFromStatement(st, extInputMap, hints)
+		}
 	}
 }
 

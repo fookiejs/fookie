@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fookie.fullname" . }}-schema
+  labels:
+    {{- include "fookie.labels" . | nindent 4 }}
+data:
+  {{ .Values.schema.fileName }}: |
+{{ (.Files.Get "files/schema.fql") | nindent 4 }}

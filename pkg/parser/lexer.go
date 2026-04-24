@@ -11,7 +11,11 @@ const (
 	TOKEN_MODEL
 	TOKEN_EXTERNAL
 	TOKEN_MODULE
+	TOKEN_SEED
+	TOKEN_CRON
 	TOKEN_USE
+	TOKEN_SETUP
+	TOKEN_NOTIFY
 
 	TOKEN_CREATE
 	TOKEN_READ
@@ -24,13 +28,14 @@ const (
 	TOKEN_EFFECT
 	TOKEN_COMPENSATE
 
-	TOKEN_WHERE
+	TOKEN_FILTER
 	TOKEN_ORDERBY
 	TOKEN_CURSOR
 	TOKEN_RETURN
-	TOKEN_INPUT
+	TOKEN_BODY
 	TOKEN_OUTPUT
 	TOKEN_FIELDS
+	TOKEN_FOR
 
 	TOKEN_SUM
 	TOKEN_COUNT
@@ -38,7 +43,6 @@ const (
 	TOKEN_MIN
 	TOKEN_MAX
 
-	TOKEN_LOCK
 	TOKEN_SIZE
 	TOKEN_ASC
 	TOKEN_DESC
@@ -60,31 +64,32 @@ const (
 	TOKEN_STRING
 	TOKEN_NUMBER
 
-	TOKEN_ASSIGN    // =
-	TOKEN_EQ        // ==
-	TOKEN_NE        // !=
-	TOKEN_LT        // <
-	TOKEN_LE        // <=
-	TOKEN_GT        // >
-	TOKEN_GE        // >=
-	TOKEN_AND       // &&
-	TOKEN_OR        // ||
-	TOKEN_BANG      // !
-	TOKEN_PLUS      // +
-	TOKEN_MINUS     // -
-	TOKEN_MULT      // *
-	TOKEN_DIV       // /
-	TOKEN_DOT       // .
-	TOKEN_COMMA     // ,
-	TOKEN_COLON     // :
-	TOKEN_LPAREN    // (
-	TOKEN_RPAREN    // )
-	TOKEN_LBRACE    // {
-	TOKEN_RBRACE    // }
-	TOKEN_LBRACKET  // [
-	TOKEN_RBRACKET  // ]
+	TOKEN_ASSIGN
+	TOKEN_EQ
+	TOKEN_NE
+	TOKEN_LT
+	TOKEN_LE
+	TOKEN_GT
+	TOKEN_GE
+	TOKEN_AND
+	TOKEN_OR
+	TOKEN_BANG
+	TOKEN_PLUS
+	TOKEN_MINUS
+	TOKEN_MULT
+	TOKEN_DIV
+	TOKEN_DOT
+	TOKEN_COMMA
+	TOKEN_COLON
+	TOKEN_LPAREN
+	TOKEN_RPAREN
+	TOKEN_LBRACE
+	TOKEN_RBRACE
+	TOKEN_LBRACKET
+	TOKEN_RBRACKET
 
 	TOKEN_CONSTRAINT
+	TOKEN_ILLEGAL
 )
 
 type Token struct {
@@ -98,26 +103,32 @@ var keywords = map[string]TokenType{
 	"model":    TOKEN_MODEL,
 	"external": TOKEN_EXTERNAL,
 	"module":   TOKEN_MODULE,
+	"seed":     TOKEN_SEED,
+	"cron":     TOKEN_CRON,
 	"use":      TOKEN_USE,
+	"setup":    TOKEN_SETUP,
+	"notify":   TOKEN_NOTIFY,
 
 	"create": TOKEN_CREATE,
 	"read":   TOKEN_READ,
 	"update": TOKEN_UPDATE,
 	"delete": TOKEN_DELETE,
 
-	"role":   TOKEN_ROLE,
-	"rule":   TOKEN_RULE,
-	"modify": TOKEN_MODIFY,
+	"role":       TOKEN_ROLE,
+	"rule":       TOKEN_RULE,
+	"modify":     TOKEN_MODIFY,
 	"effect":     TOKEN_EFFECT,
 	"compensate": TOKEN_COMPENSATE,
 
-	"where":   TOKEN_WHERE,
+	"filter": TOKEN_FILTER,
+	"where":  TOKEN_FILTER,
 	"orderBy": TOKEN_ORDERBY,
 	"cursor":  TOKEN_CURSOR,
 	"return":  TOKEN_RETURN,
-	"input":   TOKEN_INPUT,
+	"body":    TOKEN_BODY,
 	"output":  TOKEN_OUTPUT,
 	"fields":  TOKEN_FIELDS,
+	"for":     TOKEN_FOR,
 
 	"sum":   TOKEN_SUM,
 	"count": TOKEN_COUNT,
@@ -125,7 +136,6 @@ var keywords = map[string]TokenType{
 	"min":   TOKEN_MIN,
 	"max":   TOKEN_MAX,
 
-	"lock":  TOKEN_LOCK,
 	"size":  TOKEN_SIZE,
 	"asc":   TOKEN_ASC,
 	"desc":  TOKEN_DESC,
@@ -145,10 +155,10 @@ var keywords = map[string]TokenType{
 }
 
 type Lexer struct {
-	src      []rune
-	pos      int
-	line     int
-	col      int
+	src  []rune
+	pos  int
+	line int
+	col  int
 }
 
 func NewLexer(src string) *Lexer {
@@ -181,18 +191,9 @@ func (l *Lexer) eat() rune {
 	return r
 }
 
-func (l *Lexer) skipWhitespaceAndComments() {
-	for {
-		for l.cur() == ' ' || l.cur() == '\t' || l.cur() == '\r' {
-			l.eat()
-		}
-		if (l.cur() == '/' && l.peek1() == '/') || l.cur() == '#' {
-			for l.cur() != '\n' && l.cur() != 0 {
-				l.eat()
-			}
-			continue
-		}
-		break
+func (l *Lexer) skipWhitespace() {
+	for l.cur() == ' ' || l.cur() == '\t' || l.cur() == '\r' {
+		l.eat()
 	}
 }
 
@@ -238,9 +239,22 @@ func (l *Lexer) readIdentifier() string {
 }
 
 func (l *Lexer) NextToken() Token {
-	l.skipWhitespaceAndComments()
+	l.skipWhitespace()
 
 	line, col := l.line, l.col
+
+	if l.cur() == '#' {
+		for l.cur() != '\n' && l.cur() != 0 {
+			l.eat()
+		}
+		return Token{Type: TOKEN_ILLEGAL, Value: "line comments (#) are not supported in FQL", LineNo: line, ColNo: col}
+	}
+	if l.cur() == '/' && l.peek1() == '/' {
+		for l.cur() != '\n' && l.cur() != 0 {
+			l.eat()
+		}
+		return Token{Type: TOKEN_ILLEGAL, Value: "line comments (//) are not supported in FQL", LineNo: line, ColNo: col}
+	}
 
 	c := l.cur()
 
@@ -304,11 +318,13 @@ func (l *Lexer) NextToken() Token {
 		return Token{Type: TOKEN_GT, Value: ">", LineNo: line, ColNo: col}
 
 	case c == '&' && l.peek1() == '&':
-		l.eat(); l.eat()
+		l.eat()
+		l.eat()
 		return Token{Type: TOKEN_AND, Value: "&&", LineNo: line, ColNo: col}
 
 	case c == '|' && l.peek1() == '|':
-		l.eat(); l.eat()
+		l.eat()
+		l.eat()
 		return Token{Type: TOKEN_OR, Value: "||", LineNo: line, ColNo: col}
 
 	case c == '+':
@@ -319,11 +335,11 @@ func (l *Lexer) NextToken() Token {
 		l.eat()
 		if l.cur() == '-' {
 			l.eat()
-			l.skipWhitespaceAndComments()
+			l.skipWhitespace()
 			word := l.readIdentifier()
 			constraint := "--" + word
 			pos := l.pos
-			l.skipWhitespaceAndComments()
+			l.skipWhitespace()
 			if l.cur() == 'd' {
 				extra := l.readIdentifier()
 				if extra == "desc" {

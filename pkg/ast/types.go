@@ -6,6 +6,29 @@ type Schema struct {
 	Models    []*Model
 	Externals []*External
 	Modules   []*Module
+	Seeds     []*SeedBlock
+	Crons     []*CronBlock
+	Setups    []*SeedBlock
+}
+
+type SeedBlock struct {
+	Entries []*SeedEntry
+}
+
+type SeedEntry struct {
+	Model    string
+	KeyField string
+	Records  []map[string]interface{}
+}
+
+type CronBlock struct {
+	Entries []*CronEntry
+}
+
+type CronEntry struct {
+	Name     string
+	CronExpr string
+	Body     *Block
 }
 
 type Model struct {
@@ -47,17 +70,17 @@ const (
 )
 
 type Operation struct {
-	Type    string
-	Role    *Block
-	Rule    *Block
-	Modify  *Block
+	Type       string
+	Field      string
+	Role       *Block
+	Rule       *Block
+	Modify     *Block
 	Effect     *Block
 	Compensate *Block
-	Where      *WhereClause
-	OrderBy []*OrderBy
-	Cursor  *Cursor
-	Select  []*SelectField
-	Lock    bool
+	Filter     *FilterClause
+	OrderBy    []*OrderBy
+	Cursor     *Cursor
+	Select     []*SelectField
 }
 
 type SelectField struct {
@@ -136,7 +159,7 @@ func (BuiltinCall) expressionMarker() {}
 
 type ReadQuery struct {
 	Model  string
-	Where  []Expression
+	Filter []Expression
 	Lock   bool
 	LineNo int
 }
@@ -183,7 +206,48 @@ type InExpr struct {
 
 func (InExpr) expressionMarker() {}
 
-type WhereClause struct {
+type ArrayLiteral struct {
+	Items  []Expression
+	LineNo int
+}
+
+func (ArrayLiteral) expressionMarker() {}
+
+type EffectUpdateStmt struct {
+	Model  string
+	IDExpr Expression
+	Fields []*ModifyAssignment
+	LineNo int
+}
+
+func (*EffectUpdateStmt) statementMarker() {}
+
+type EffectDeleteStmt struct {
+	Model  string
+	IDExpr Expression
+	LineNo int
+}
+
+func (*EffectDeleteStmt) statementMarker() {}
+
+type EffectNotifyStmt struct {
+	RoomName string
+	Payload  map[string]Expression
+	LineNo   int
+}
+
+func (*EffectNotifyStmt) statementMarker() {}
+
+type ForIn struct {
+	Var      string
+	Iterable Expression
+	Body     *Block
+	LineNo   int
+}
+
+func (ForIn) statementMarker() {}
+
+type FilterClause struct {
 	Conditions []Expression
 }
 
@@ -193,13 +257,13 @@ type OrderBy struct {
 }
 
 type Cursor struct {
-	Size   int
-	After  *string
+	Size  int
+	After *string
 }
 
 type External struct {
 	Name   string
-	Input  map[string]string
+	Body   map[string]string
 	Output map[string]string
 }
 
