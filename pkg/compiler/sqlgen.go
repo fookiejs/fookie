@@ -455,3 +455,25 @@ func (sg *SQLGenerator) CompileMaxQuery(model *ast.Model, field string, op *ast.
 	sql += ";"
 	return sql
 }
+
+func (sg *SQLGenerator) CompileStddevQuery(model *ast.Model, field string, op *ast.Operation) string {
+	table := snake(model.Name)
+	col := snake(field)
+	sql := fmt.Sprintf("SELECT COALESCE(STDDEV(\"%s\"), 0) FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", col, table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}
+
+func (sg *SQLGenerator) CompileVarianceQuery(model *ast.Model, field string, op *ast.Operation) string {
+	table := snake(model.Name)
+	col := snake(field)
+	sql := fmt.Sprintf("SELECT COALESCE(VARIANCE(\"%s\"), 0) FROM \"%s\"\nWHERE \"deleted_at\" IS NULL AND \"status\" = 'done'", col, table)
+	if op.Filter != nil {
+		sql = sg.appendFilter(sql, op.Filter)
+	}
+	sql += ";"
+	return sql
+}

@@ -142,6 +142,16 @@ model WalletTransfer {
     where { transfer_status == "done" }
     modify { log("calculating average transfer amount") }
   }
+
+  stddev(amount) {
+    where { transfer_status == "done" }
+    modify { log("calculating transfer volatility") }
+  }
+
+  variance(amount) {
+    where { transfer_status == "done" }
+    modify { log("calculating transfer variance") }
+  }
 }
 
 model AtmTransaction {

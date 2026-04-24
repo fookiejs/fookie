@@ -42,6 +42,8 @@ const (
 	TOKEN_AVG
 	TOKEN_MIN
 	TOKEN_MAX
+	TOKEN_STDDEV
+	TOKEN_VARIANCE
 
 	TOKEN_SIZE
 	TOKEN_ASC
@@ -130,11 +132,13 @@ var keywords = map[string]TokenType{
 	"fields":  TOKEN_FIELDS,
 	"for":     TOKEN_FOR,
 
-	"sum":   TOKEN_SUM,
-	"count": TOKEN_COUNT,
-	"avg":   TOKEN_AVG,
-	"min":   TOKEN_MIN,
-	"max":   TOKEN_MAX,
+	"sum":      TOKEN_SUM,
+	"count":    TOKEN_COUNT,
+	"avg":      TOKEN_AVG,
+	"min":      TOKEN_MIN,
+	"max":      TOKEN_MAX,
+	"stddev":   TOKEN_STDDEV,
+	"variance": TOKEN_VARIANCE,
 
 	"size":  TOKEN_SIZE,
 	"asc":   TOKEN_ASC,

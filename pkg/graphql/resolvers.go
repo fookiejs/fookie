@@ -303,3 +303,29 @@ func resolveMax(modelName, field string) graphql.FieldResolveFn {
 		return exec.Max(p.Context, modelName, field, req)
 	}
 }
+
+func resolveStddev(modelName, field string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		req := map[string]interface{}{}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			req["filter"] = userFilter
+		}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Stddev(p.Context, modelName, field, req)
+	}
+}
+
+func resolveVariance(modelName, field string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		req := map[string]interface{}{}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			req["filter"] = userFilter
+		}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Variance(p.Context, modelName, field, req)
+	}
+}

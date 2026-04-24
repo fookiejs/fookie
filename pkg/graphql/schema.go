@@ -146,6 +146,10 @@ func BuildSchema(schema *ast.Schema, eventBus *events.Bus, roomBus *events.RoomB
 				resolverFunc = resolveMin(model.Name, op.Field)
 			case "max":
 				resolverFunc = resolveMax(model.Name, op.Field)
+			case "stddev":
+				resolverFunc = resolveStddev(model.Name, op.Field)
+			case "variance":
+				resolverFunc = resolveVariance(model.Name, op.Field)
 			default:
 				continue
 			}

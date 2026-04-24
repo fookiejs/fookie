@@ -2019,3 +2019,139 @@ func (e *Executor) Max(ctx context.Context, modelName, field string, req map[str
 
 	return result, nil
 }
+
+// Stddev returns the standard deviation of a field across records matching the filter
+func (e *Executor) Stddev(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.stddev "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "stddev", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "stddev")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "stddev"),
+		attribute.String("fookie.field", field),
+	)
+
+	op, model, err := e.resolveOp(modelName, "stddev")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "stddev", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileStddevQuery(model, field, op)
+	e.logger.Info("stddev query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val sql.NullFloat64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	if val.Valid {
+		result = val.Float64
+	}
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
+}
+
+// Variance returns the variance of a field across records matching the filter
+func (e *Executor) Variance(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.variance "+modelName)
+	defer span.End()
+	opStart := time.Now()
+	defer func() {
+		st := "ok"
+		if err != nil {
+			st = "error"
+		}
+		telemetry.RecordExecutorOperation(modelName, "variance", st, time.Since(opStart).Seconds())
+	}()
+	defer telemetry.BeginExecutorOp(modelName, "variance")()
+	span.SetAttributes(
+		attribute.String("fookie.model", modelName),
+		attribute.String("fookie.operation", "variance"),
+		attribute.String("fookie.field", field),
+	)
+
+	op, model, err := e.resolveOp(modelName, "variance")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return 0, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "variance", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return 0, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return 0, fmt.Errorf("rule: %w", err)
+	}
+
+	sqlStr := e.sqlGen.CompileVarianceQuery(model, field, op)
+	e.logger.Info("variance query", "sql", sqlStr)
+
+	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.aggregate")
+	dbSpan.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.statement", sqlStr),
+	)
+	var val sql.NullFloat64
+	err = e.execer(ctx).QueryRowContext(dbCtx, sqlStr).Scan(&val)
+	dbSpan.End()
+	if err != nil {
+		dbSpan.RecordError(err)
+		dbSpan.SetStatus(codes.Error, err.Error())
+		return 0, fmt.Errorf("query: %w", err)
+	}
+
+	if val.Valid {
+		result = val.Float64
+	}
+
+	if err := e.execBlock(ctx, "modify", op.Modify, rc); err != nil {
+		return 0, fmt.Errorf("modify: %w", err)
+	}
+
+	rc.vars["result"] = result
+	if err := e.execBlock(ctx, "effect", op.Effect, rc); err != nil {
+		return 0, fmt.Errorf("effect: %w", err)
+	}
+
+	return result, nil
+}

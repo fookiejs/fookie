@@ -227,7 +227,7 @@ func (p *Parser) parseModel() (*ast.Model, error) {
 			}
 			model.CRUD[opType] = op
 
-		case TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX:
+		case TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX, TOKEN_STDDEV, TOKEN_VARIANCE:
 			opType := p.eat().Value
 			if p.cur().Type != TOKEN_LPAREN {
 				return nil, p.errorf("expected ( after %s", opType)
@@ -783,7 +783,7 @@ func (p *Parser) parseSelectField() (*ast.SelectField, error) {
 
 func isAggregate(t Token) bool {
 	switch t.Type {
-	case TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX:
+	case TOKEN_SUM, TOKEN_COUNT, TOKEN_AVG, TOKEN_MIN, TOKEN_MAX, TOKEN_STDDEV, TOKEN_VARIANCE:
 		return true
 	}
 	return false
