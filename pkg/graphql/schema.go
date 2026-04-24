@@ -263,6 +263,52 @@ func buildObjectTypes(schema *ast.Schema, filterByModel map[string]*graphql.Inpu
 								Args:    argCfg,
 								Resolve: hasManyResolver(other.Name, of.Name+"_id"),
 							}
+
+							// Add nested aggregate fields for child's aggregates
+							childOtherSnake := toSnake(other.Name)
+							for aggOpType, aggOp := range other.CRUD {
+								if aggOpType == "read" || aggOpType == "create" || aggOpType == "update" || aggOpType == "delete" {
+									continue
+								}
+
+								// Build aggregate field name
+								var aggFieldName string
+								if aggOpType == "count" {
+									aggFieldName = aggOpType + "_" + childOtherSnake
+								} else {
+									aggFieldName = aggOpType + "_" + childOtherSnake + "_" + toSnake(aggOp.Field)
+								}
+
+								// Create resolver based on operation type
+								var resolverFunc graphql.FieldResolveFn
+								switch aggOpType {
+								case "sum":
+									resolverFunc = nestedSumResolver(other.Name, aggOp.Field, of.Name+"_id")
+								case "count":
+									resolverFunc = nestedCountResolver(other.Name, of.Name+"_id")
+								case "avg":
+									resolverFunc = nestedAvgResolver(other.Name, aggOp.Field, of.Name+"_id")
+								case "min":
+									resolverFunc = nestedMinResolver(other.Name, aggOp.Field, of.Name+"_id")
+								case "max":
+									resolverFunc = nestedMaxResolver(other.Name, aggOp.Field, of.Name+"_id")
+								case "stddev":
+									resolverFunc = nestedStddevResolver(other.Name, aggOp.Field, of.Name+"_id")
+								case "variance":
+									resolverFunc = nestedVarianceResolver(other.Name, aggOp.Field, of.Name+"_id")
+								default:
+									continue
+								}
+
+								fields[aggFieldName] = &graphql.Field{
+									Type: graphql.Float,
+									Args: graphql.FieldConfigArgument{
+										"filter": &graphql.ArgumentConfig{Type: wt},
+									},
+									Resolve: resolverFunc,
+								}
+							}
+
 							break
 						}
 					}

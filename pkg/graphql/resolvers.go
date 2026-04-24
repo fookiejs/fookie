@@ -329,3 +329,193 @@ func resolveVariance(modelName, field string) graphql.FieldResolveFn {
 		return exec.Variance(p.Context, modelName, field, req)
 	}
 }
+
+// Nested aggregate resolvers - parent context aware
+func nestedSumResolver(modelName, field, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Sum(p.Context, modelName, field, req)
+	}
+}
+
+func nestedCountResolver(modelName, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Count(p.Context, modelName, req)
+	}
+}
+
+func nestedAvgResolver(modelName, field, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Avg(p.Context, modelName, field, req)
+	}
+}
+
+func nestedMinResolver(modelName, field, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Min(p.Context, modelName, field, req)
+	}
+}
+
+func nestedMaxResolver(modelName, field, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Max(p.Context, modelName, field, req)
+	}
+}
+
+func nestedStddevResolver(modelName, field, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Stddev(p.Context, modelName, field, req)
+	}
+}
+
+func nestedVarianceResolver(modelName, field, fkColumn string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		parent, ok := p.Source.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+		var parentID interface{} = parent["id"]
+		if parentID == nil {
+			return nil, nil
+		}
+
+		filter := map[string]interface{}{
+			fkColumn: map[string]interface{}{"eq": parentID},
+		}
+		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
+			for k, v := range userFilter {
+				filter[k] = v
+			}
+		}
+		req := map[string]interface{}{"filter": filter}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		return exec.Variance(p.Context, modelName, field, req)
+	}
+}
