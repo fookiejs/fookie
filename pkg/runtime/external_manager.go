@@ -14,6 +14,7 @@ import (
 
 	"github.com/fookiejs/fookie/pkg/ast"
 	"github.com/fookiejs/fookie/pkg/events"
+	"github.com/fookiejs/fookie/pkg/telemetry"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -602,6 +603,12 @@ func (op *OutboxProcessor) processPending() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	// Record pending job count metric
+	var pendingCount int64
+	op.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox WHERE status = 'pending'`).Scan(&pendingCount)
+	telemetry.RecordOutboxPending(pendingCount)
+
 	op.processForwardStep(ctx)
 	op.processCompensationStep(ctx)
 }

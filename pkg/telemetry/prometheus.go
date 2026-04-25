@@ -10,12 +10,15 @@ import (
 )
 
 var (
-	promMu       sync.Mutex
-	promReg      *prometheus.Registry
-	promService  string
-	execCounter  *prometheus.CounterVec
-	execDuration *prometheus.HistogramVec
-	execInFlight *prometheus.GaugeVec
+	promMu              sync.Mutex
+	promReg             *prometheus.Registry
+	promService         string
+	execCounter         *prometheus.CounterVec
+	execDuration        *prometheus.HistogramVec
+	execInFlight        *prometheus.GaugeVec
+	outboxPending       *prometheus.GaugeVec
+	outboxProcessedTotal *prometheus.CounterVec
+	outboxLatency       *prometheus.HistogramVec
 )
 
 func InitPrometheus(service string) {
@@ -52,7 +55,32 @@ func InitPrometheus(service string) {
 		},
 		[]string{"service", "model", "operation"},
 	)
-	promReg.MustRegister(execCounter, execDuration, execInFlight)
+	outboxPending = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "fookie_outbox_pending",
+			Help: "Number of pending (unprocessed) outbox jobs.",
+		},
+		[]string{"service"},
+	)
+	outboxProcessedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fookie_outbox_processed_total",
+			Help: "Total number of outbox jobs processed.",
+		},
+		[]string{"service", "status"},
+	)
+	outboxLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "fookie_outbox_latency_seconds",
+			Help:    "Latency from job creation to completion.",
+			Buckets: []float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
+		},
+		[]string{"service", "status"},
+	)
+	promReg.MustRegister(
+		execCounter, execDuration, execInFlight,
+		outboxPending, outboxProcessedTotal, outboxLatency,
+	)
 }
 
 func RecordExecutorOperation(model, operation, result string, seconds float64) {
@@ -88,6 +116,33 @@ func BeginExecutorOp(model, operation string) func() {
 	g.WithLabelValues(svc, model, operation).Inc()
 	return func() {
 		g.WithLabelValues(svc, model, operation).Dec()
+	}
+}
+
+// RecordOutboxPending updates the gauge of pending outbox jobs.
+func RecordOutboxPending(count int64) {
+	promMu.Lock()
+	g := outboxPending
+	svc := promService
+	promMu.Unlock()
+	if g == nil {
+		return
+	}
+	g.WithLabelValues(svc).Set(float64(count))
+}
+
+// RecordOutboxProcessed increments the processed counter and records latency.
+func RecordOutboxProcessed(status string, latencySeconds float64) {
+	promMu.Lock()
+	c := outboxProcessedTotal
+	h := outboxLatency
+	svc := promService
+	promMu.Unlock()
+	if c != nil {
+		c.WithLabelValues(svc, status).Inc()
+	}
+	if h != nil && latencySeconds >= 0 {
+		h.WithLabelValues(svc, status).Observe(latencySeconds)
 	}
 }
 
