@@ -139,7 +139,7 @@ func main() {
 	var proc *runtime.OutboxProcessor
 	if rdb != nil {
 		proc = runtime.NewOutboxProcessorWithRedis(executor, rdb)
-		executor.SetOutboxNotify(func() { proc.NotifyNewOutboxItem("1") })
+		executor.SetOutboxNotify(func(id string) { proc.NotifyNewOutboxItem(id) })
 		logger.Info("Outbox: Redis BLPOP mode (instant wake-up)")
 	} else {
 		proc = runtime.NewOutboxProcessor(executor)

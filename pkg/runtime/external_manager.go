@@ -262,40 +262,49 @@ type outboxJob struct {
 }
 
 type OutboxProcessor struct {
-	manager *ExternalManager
-	exec    *Executor
-	db      *sql.DB
-	ticker  *time.Ticker
-	done    chan struct{}
-	rdb     *redis.Client // optional: nil = poll mode
+	manager     *ExternalManager
+	exec        *Executor
+	db          *sql.DB
+	ticker      *time.Ticker
+	done        chan struct{}
+	rdb         *redis.Client  // optional: nil = poll mode
+	runAfterCh  chan struct{}   // kicks run_after scheduler to re-evaluate next wakeup
 }
 
 func NewOutboxProcessor(exec *Executor) *OutboxProcessor {
 	return &OutboxProcessor{
-		manager: exec.ExternalManager(),
-		exec:    exec,
-		db:      exec.DB(),
-		done:    make(chan struct{}),
+		manager:    exec.ExternalManager(),
+		exec:       exec,
+		db:         exec.DB(),
+		done:       make(chan struct{}),
+		runAfterCh: make(chan struct{}, 1),
 	}
 }
 
 func NewOutboxProcessorWithRedis(exec *Executor, rdb *redis.Client) *OutboxProcessor {
 	return &OutboxProcessor{
-		manager: exec.ExternalManager(),
-		exec:    exec,
-		db:      exec.DB(),
-		done:    make(chan struct{}),
-		rdb:     rdb,
+		manager:    exec.ExternalManager(),
+		exec:       exec,
+		db:         exec.DB(),
+		done:       make(chan struct{}),
+		rdb:        rdb,
+		runAfterCh: make(chan struct{}, 1),
 	}
 }
 
-// NotifyNewOutboxItem pushes the outbox row ID to Redis so workers pick it up instantly.
+// NotifyNewOutboxItem pushes the actual outbox row ID to Redis so workers pick it
+// up instantly. Also kicks the run_after scheduler so it can re-evaluate its next
+// wakeup time in case the new item has a closer scheduled time.
 // Falls back silently if Redis not configured.
 func (op *OutboxProcessor) NotifyNewOutboxItem(id string) {
-	if op.rdb == nil {
-		return
+	if op.rdb != nil {
+		op.rdb.LPush(context.Background(), "fookie:outbox:pending", id)
 	}
-	op.rdb.LPush(context.Background(), "fookie:outbox:pending", id)
+	// Non-blocking kick: wake the run_after scheduler to re-evaluate.
+	select {
+	case op.runAfterCh <- struct{}{}:
+	default:
+	}
 }
 
 func (op *OutboxProcessor) systemUpdateEntity(ctx context.Context, modelName, id string, input map[string]interface{}) error {
@@ -328,8 +337,32 @@ func (op *OutboxProcessor) Start(interval time.Duration) {
 }
 
 // runRedisMode uses BLPOP for instant, zero-poll outbox consumption.
+// Three concurrent mechanisms ensure no item is ever missed:
+//  1. BLPOP — instant wake-up when a new item is inserted.
+//  2. Fallback ticker (5s) — safety net for lost Redis signals (e.g. server crash
+//     between INSERT and LPUSH, or Redis restart).
+//  3. run_after scheduler — wakes exactly when the next scheduled item becomes ready.
 func (op *OutboxProcessor) runRedisMode() {
 	ctx := context.Background()
+
+	// 2. Fallback: periodic DB scan regardless of BLPOP signals.
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				op.processPending()
+			case <-op.done:
+				return
+			}
+		}
+	}()
+
+	// 3. Precision scheduler: wake exactly when the next run_after item is ready.
+	go op.runAfterScheduler(ctx)
+
+	// 1. Main loop: BLPOP.
 	for {
 		select {
 		case <-op.done:
@@ -337,15 +370,70 @@ func (op *OutboxProcessor) runRedisMode() {
 		default:
 		}
 
-		// BLPOP blocks until an item appears (or 2s timeout to check done channel)
+		// Block up to 2s (allows checking done without busy-wait).
 		blpopResult := op.rdb.BLPop(ctx, 2*time.Second, "fookie:outbox:pending")
 		if blpopResult.Err() != nil {
-			// timeout or transient error — check done and loop
+			// Timeout or transient error — loop back to check done.
 			continue
 		}
 
-		// Signal received — process pending items (any worker can process any item).
 		op.processPending()
+		// Kick the run_after scheduler: the processed item may have triggered new
+		// run_after inserts, so re-evaluate next wakeup time.
+		select {
+		case op.runAfterCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// runAfterScheduler wakes precisely when the next scheduled (run_after) outbox item
+// becomes ready. It re-evaluates after every processPending or NotifyNewOutboxItem call.
+func (op *OutboxProcessor) runAfterScheduler(ctx context.Context) {
+	nextRunAfter := func() time.Duration {
+		var t time.Time
+		err := op.db.QueryRowContext(ctx, `
+			SELECT MIN(run_after)
+			FROM outbox
+			WHERE status = 'pending'
+			  AND is_compensation = FALSE
+			  AND retry_count < 3
+			  AND run_after > NOW()
+		`).Scan(&t)
+		if err != nil || t.IsZero() {
+			return 0
+		}
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+		return 0
+	}
+
+	for {
+		d := nextRunAfter()
+		if d == 0 {
+			// No future-scheduled items — idle until kicked or timeout.
+			select {
+			case <-op.done:
+				return
+			case <-op.runAfterCh:
+				// A new item was inserted; re-evaluate.
+			case <-time.After(60 * time.Second):
+				// Periodic re-check in case we missed a kick.
+			}
+			continue
+		}
+
+		select {
+		case <-op.done:
+			return
+		case <-op.runAfterCh:
+			// New item inserted — re-evaluate; its run_after may be sooner.
+			continue
+		case <-time.After(d):
+			// Scheduled item is now ready.
+			op.processPending()
+		}
 	}
 }
 

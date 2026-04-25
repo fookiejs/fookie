@@ -36,7 +36,7 @@ type Executor struct {
 	logSink       LogSink
 	roomBus       *events.RoomBus
 	roomNameCache map[string]string
-	outboxNotify  func() // optional: called after every outbox INSERT (for Redis wake-up)
+	outboxNotify  func(id string) // optional: called after every outbox INSERT (for Redis wake-up)
 }
 
 func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
@@ -55,10 +55,10 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 }
 
 func (e *Executor) SetLogSink(s LogSink)         { e.logSink = s }
-func (e *Executor) SetOutboxNotify(fn func())    { e.outboxNotify = fn }
-func (e *Executor) notifyOutbox()                {
+func (e *Executor) SetOutboxNotify(fn func(id string)) { e.outboxNotify = fn }
+func (e *Executor) notifyOutbox(id string) {
 	if e.outboxNotify != nil {
-		e.outboxNotify()
+		e.outboxNotify(id)
 	}
 }
 
@@ -1224,15 +1224,17 @@ func (e *Executor) queueEffects(ctx context.Context, effect *ast.Block, compensa
 		if targetField != "" {
 			targetFieldVal = targetField
 		}
-		_, err := e.execer(ctx).ExecContext(ctx, `
+		var insertedID string
+		err := e.execer(ctx).QueryRowContext(ctx, `
 			INSERT INTO outbox (entity_type, entity_id, external_name, payload, saga_id, saga_step, is_compensation, target_field, run_after, recur_cron, root_request_id)
-			VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, $8, $9, $10)`,
+			VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, $8, $9, $10)
+			RETURNING id`,
 			entityType, entityID, extName, payload, sagaID, step, targetFieldVal, runAfter, recurCron, rc.rootRequestID,
-		)
+		).Scan(&insertedID)
 		if err != nil {
 			return false, fmt.Errorf("queue %s: %w", extName, err)
 		}
-		e.notifyOutbox()
+		e.notifyOutbox(insertedID)
 		queuedAsync = true
 	}
 
