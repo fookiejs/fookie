@@ -29,14 +29,19 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM alpine:3.19
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates curl
+
+# Create non-root user for security
+RUN addgroup -g 1000 fookie && \
+    adduser -u 1000 -G fookie -s /bin/sh -D fookie
 
 WORKDIR /app
 
 COPY --from=builder /out/fookie-server /app/fookie-server
 COPY --from=builder /out/fookie-worker /app/fookie-worker
 COPY docker/fookie-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh && \
+    chown -R fookie:fookie /app
 
 # ── Runtime config (all overridable via env / docker-compose) ─────────────────
 # DB & Redis — no defaults on purpose so misconfiguration fails loudly.
@@ -59,5 +64,12 @@ ENV FOOKIE_MODE="server"
 VOLUME ["/schema.fql"]
 
 EXPOSE 8080
+
+# Health check — validates /health endpoint (all modes)
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+# Run as non-root user
+USER fookie
 
 ENTRYPOINT ["/entrypoint.sh"]

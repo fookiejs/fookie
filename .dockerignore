@@ -1,0 +1,46 @@
+# Git & version control
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.circleci
+
+# Development
+.cursor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Dependencies & build artifacts
+node_modules
+dist
+build
+target
+bin
+*.o
+*.a
+*.so
+
+# Tests & documentation
+tests
+docs
+*.md
+README.md
+CHANGELOG.md
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Misc
+.claude
+tmp
+.tmp
+.cache
