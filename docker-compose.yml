@@ -87,7 +87,6 @@ services:
   # Grafana → http://localhost:3000  (anonymous admin, no login)
 
   tempo:
-    profiles: [observability]
     image: grafana/tempo:2.3.1
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
@@ -96,7 +95,6 @@ services:
     restart: unless-stopped
 
   otel-collector:
-    profiles: [observability]
     image: otel/opentelemetry-collector-contrib:0.96.0
     command: ["--config=/etc/otel-collector.yaml"]
     volumes:
@@ -108,7 +106,6 @@ services:
     restart: unless-stopped
 
   prometheus:
-    profiles: [observability]
     image: prom/prometheus:v2.50.1
     volumes:
       - ./deploy/compose/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -124,7 +121,6 @@ services:
     restart: unless-stopped
 
   loki:
-    profiles: [observability]
     image: grafana/loki:2.9.4
     command: ["-config.file=/etc/loki/config.yaml"]
     volumes:
@@ -135,7 +131,6 @@ services:
     restart: unless-stopped
 
   promtail:
-    profiles: [observability]
     image: grafana/promtail:2.9.4
     volumes:
       - ./deploy/compose/config/promtail-config.yml:/etc/promtail/config.yml:ro
@@ -145,7 +140,6 @@ services:
     restart: unless-stopped
 
   postgres-exporter:
-    profiles: [observability]
     image: prometheuscommunity/postgres-exporter:v0.15.0
     environment:
       DATA_SOURCE_NAME: "postgresql://grafana_ro:grafana_ro_dev@postgres:5432/fookie?sslmode=disable"
@@ -153,7 +147,6 @@ services:
     restart: unless-stopped
 
   redis-exporter:
-    profiles: [observability]
     image: oliver006/redis_exporter:v1.58.0
     environment:
       REDIS_ADDR: "redis://redis:6379"
@@ -161,7 +154,6 @@ services:
     restart: unless-stopped
 
   cadvisor:
-    profiles: [observability]
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     privileged: true
     volumes:
@@ -176,7 +168,6 @@ services:
     restart: unless-stopped
 
   grafana:
-    profiles: [observability]
     image: grafana/grafana:10.3.1
     environment:
       GF_AUTH_ANONYMOUS_ENABLED:      "true"
