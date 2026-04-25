@@ -14,13 +14,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/fookiejs/fookie/demo/handlers"
 	"github.com/fookiejs/fookie/pkg/compiler"
 	"github.com/fookiejs/fookie/pkg/events"
 	fookiegql "github.com/fookiejs/fookie/pkg/graphql"
-	"github.com/fookiejs/fookie/pkg/parser"
 	"github.com/fookiejs/fookie/pkg/runtime"
-	schemamerge "github.com/fookiejs/fookie/pkg/schema"
+	schemapkg "github.com/fookiejs/fookie/pkg/schema"
 	"github.com/fookiejs/fookie/pkg/telemetry"
 	"github.com/redis/go-redis/v9"
 )
@@ -33,9 +31,9 @@ func defaultSchemaPath() string {
 }
 
 func main() {
-	schemaPath := flag.String("schema", defaultSchemaPath(), "Path to FSL schema file (override with SCHEMA_PATH env)")
+	schemaPath := flag.String("schema", defaultSchemaPath(), "Path to .fql file or directory of .fql files (override with SCHEMA_PATH env)")
 	dbURL := flag.String("db", "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable", "Database connection string")
-	port := flag.String("port", ":8080", "Server port")
+	port := flag.String("port", ":8080", "Server listen port")
 	flag.Parse()
 
 	logger := logrus.New()
@@ -63,39 +61,30 @@ func main() {
 		logger.Info("OpenTelemetry tracer initialised")
 	}
 
-	schemaContent, err := os.ReadFile(*schemaPath)
+	// Load schema — supports single file or directory of .fql files
+	schema, err := schemapkg.LoadSchema(*schemaPath)
 	if err != nil {
-		log.Fatalf("Failed to read schema: %v", err)
-	}
-
-	lexer := parser.NewLexer(string(schemaContent))
-	tokens := lexer.Tokenize()
-	p := parser.NewParser(tokens)
-	schema, err := p.Parse()
-	if err != nil {
-		log.Fatalf("Failed to parse schema: %v", err)
+		log.Fatalf("load schema: %v", err)
 	}
 
 	if os.Getenv("FOOKEE_DISABLE_ROOM_BUILTINS") != "true" {
-		if err := schemamerge.MergeBuiltinRooms(schema); err != nil {
+		if err := schemapkg.MergeBuiltinRooms(schema); err != nil {
 			log.Fatalf("merge builtin rooms: %v", err)
 		}
 	}
 
-	logger.Infof("Parsed schema with %d models, %d externals, %d modules",
+	logger.Infof("Schema loaded: %d models, %d externals, %d modules",
 		len(schema.Models), len(schema.Externals), len(schema.Modules))
 
 	sqlGen := compiler.NewSQLGenerator(schema)
 	sqls, err := sqlGen.Generate()
 	if err != nil {
-		log.Fatalf("Failed to generate SQL: %v", err)
+		log.Fatalf("generate SQL: %v", err)
 	}
-
-	logger.Infof("Generated %d SQL statements", len(sqls))
 
 	db, err := sql.Open("postgres", *dbURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
@@ -104,19 +93,19 @@ func main() {
 
 	idem := runtime.NewIdempotencyStore(db)
 	if err := idem.CreateTable(ddlCtx); err != nil {
-		log.Fatalf("Failed to create idempotency_keys table: %v", err)
+		log.Fatalf("create idempotency_keys table: %v", err)
 	}
 
 	for i, sqlStmt := range sqls {
 		if _, err := db.ExecContext(ddlCtx, sqlStmt); err != nil {
-			logger.Warnf("Failed to execute SQL statement %d: %v", i, err)
+			logger.Warnf("DDL %d: %v", i, err)
 		}
 	}
 
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
 
-	// Redis — optional. Set REDIS_URL env to enable multi-server notify + instant outbox.
+	// Redis — optional; enables multi-server pub/sub notify + instant outbox
 	var rdb *redis.Client
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		opts, err := redis.ParseURL(redisURL)
@@ -146,10 +135,6 @@ func main() {
 
 	bus := events.NewBus()
 	executor.SetEventBus(bus)
-	logger.Info("SSE event bus attached")
-
-	handlers.Register(executor)
-	logger.Info("Simulation handlers registered")
 
 	var proc *runtime.OutboxProcessor
 	if rdb != nil {
@@ -163,78 +148,46 @@ func main() {
 	proc.Start(10 * time.Millisecond)
 	defer proc.Stop()
 
-	seedCtx, seedCancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer seedCancel()
-	if err := runtime.ExecuteSeeds(seedCtx, schema, executor); err != nil {
-		log.Fatalf("Seed failed: %v", err)
+	// Schema-driven init: seeds, setups, crons
+	initCtx, initCancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer initCancel()
+
+	if err := runtime.ExecuteSeeds(initCtx, schema, executor); err != nil {
+		log.Fatalf("seeds: %v", err)
 	}
-	logger.Infof("Seed completed (%d seed blocks)", len(schema.Seeds))
+	logger.Infof("Seeds done (%d blocks)", len(schema.Seeds))
 
-	if err := runtime.ExecuteSetups(seedCtx, schema, executor); err != nil {
-		log.Fatalf("Setup failed: %v", err)
+	if err := runtime.ExecuteSetups(initCtx, schema, executor); err != nil {
+		log.Fatalf("setups: %v", err)
 	}
-	logger.Infof("Setup completed (%d setup blocks)", len(schema.Setups))
+	logger.Infof("Setups done (%d blocks)", len(schema.Setups))
 
-	if err := runtime.ExecuteCrons(seedCtx, schema, db); err != nil {
-		log.Fatalf("Cron setup failed: %v", err)
+	if err := runtime.ExecuteCrons(initCtx, schema, db); err != nil {
+		log.Fatalf("crons: %v", err)
 	}
-	logger.Infof("Cron setup completed (%d cron blocks)", len(schema.Crons))
+	logger.Infof("Crons done (%d blocks)", len(schema.Crons))
 
-	if os.Getenv("AUTO_BOOTSTRAP") == "true" {
-		logger.Info("Auto-bootstrapping bank...")
-		w, u, err := handlers.BootstrapBank(seedCtx, executor)
-		if err != nil {
-			logger.Warnf("Bootstrap failed: %v", err)
-		} else {
-			logger.Infof("Bootstrapped: %d wallets, %d users", w, u)
-		}
-	}
-
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			printBankState(ctx, executor)
-		}
-	}()
-	logger.Info("Console bank state logger started (2s interval)")
-
+	// Build GraphQL schema
 	gqlSchema, err := fookiegql.BuildSchema(schema, bus, roomBus)
 	if err != nil {
 		log.Fatalf("GraphQL schema: %v", err)
 	}
 	gqlHandler := fookiegql.GraphiQLWrapper(fookiegql.NewHandler(executor, gqlSchema, idem))
+	wsHandler := fookiegql.NewWSHandler(executor, gqlSchema)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", telemetry.MetricsHandler())
-
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/demo/stats", handleDemoStats(db))
-	mux.HandleFunc("/demo", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/demo/", http.StatusFound)
-	})
-	mux.HandleFunc("/demo/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/demo/" && r.URL.Path != "/demo/index.html" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		_, _ = w.Write(demoIndexHTML)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.Handle("/graphql", gqlHandler)
+	mux.Handle("/graphql/ws", wsHandler) // graphql-transport-ws protocol
 
 	handler := otelhttp.NewHandler(mux, "fookie.http",
 		otelhttp.WithMessageEvents(otelhttp.ReadEvents, otelhttp.WriteEvents),
 	)
 
-	logger.Infof("Banking demo server on %s — /demo/  /demo/stats  /graphql", *port)
+	logger.Infof("Fookie server on %s  →  /graphql (HTTP)  /graphql/ws (WebSocket)  /health", *port)
 	log.Fatal(http.ListenAndServe(*port, handler))
-}
-
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status":"ok"}`)
 }

@@ -1,0 +1,21 @@
+{
+  "name": "fookie-js",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Fookie backend runtime",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "keywords": ["fookie", "graphql", "websocket", "client"],
+  "license": "MIT",
+  "dependencies": {
+    "graphql-ws": "^5.16.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}

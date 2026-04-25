@@ -1,0 +1,64 @@
+# Fookie all-in-one image: PostgreSQL 15 + Redis 7 + server + worker
+# in a single container — like `docker run postgres`, but for your whole backend.
+#
+# Usage:
+#   docker build -f docker/Dockerfile.allinone -t fookiejs/fookie .
+#
+#   # Single schema file
+#   docker run -v ./schema.fql:/schema.fql -p 8080:8080 fookiejs/fookie
+#
+#   # Directory of .fql files
+#   docker run -v ./schemas:/schemas -e SCHEMA_PATH=/schemas -p 8080:8080 fookiejs/fookie
+#
+#   # With persistent data
+#   docker run -v ./schema.fql:/schema.fql \
+#              -v fookie_pgdata:/var/lib/postgresql/data \
+#              -p 8080:8080 fookiejs/fookie
+
+# ── Stage 1: Build Go binaries ───────────────────────────────────────────────
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -ldflags='-s -w' -o /out/fookie-server ./cmd/server && \
+    CGO_ENABLED=0 GOOS=linux go build -a -ldflags='-s -w' -o /out/fookie-worker ./cmd/worker
+
+# ── Stage 2: Runtime image ───────────────────────────────────────────────────
+FROM alpine:3.19
+
+# PostgreSQL 15 + Redis + bash (needed by entrypoint)
+RUN apk --no-cache add \
+    ca-certificates \
+    bash \
+    postgresql15 \
+    postgresql15-client \
+    redis
+
+# Copy binaries
+COPY --from=builder /out/fookie-server /usr/local/bin/fookie-server
+COPY --from=builder /out/fookie-worker /usr/local/bin/fookie-worker
+
+# Copy entrypoint
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Logs directory
+RUN mkdir -p /var/log && touch /var/log/postgresql.log
+
+# Default environment
+ENV SCHEMA_PATH=/schema.fql
+ENV PORT=:8080
+ENV FOOKIE_DB_URL=postgres://fookie:fookie@localhost:5432/fookie?sslmode=disable
+ENV REDIS_URL=redis://localhost:6379
+ENV FOOKEE_SERVICE_NAME=fookie
+
+# GraphQL HTTP + WebSocket
+EXPOSE 8080
+
+# Mount your schema here (file or directory)
+VOLUME ["/schema.fql"]
+
+ENTRYPOINT ["/entrypoint.sh"]

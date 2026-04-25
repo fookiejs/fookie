@@ -13,9 +13,8 @@ import (
 	"time"
 
 	"github.com/fookiejs/fookie/pkg/compiler"
-	"github.com/fookiejs/fookie/pkg/parser"
 	"github.com/fookiejs/fookie/pkg/runtime"
-	schemamerge "github.com/fookiejs/fookie/pkg/schema"
+	schemapkg "github.com/fookiejs/fookie/pkg/schema"
 	"github.com/fookiejs/fookie/pkg/telemetry"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
@@ -76,20 +75,13 @@ func main() {
 		logger.Info("OpenTelemetry tracer initialised")
 	}
 
-	schemaContent, err := os.ReadFile(*schemaPath)
+	schema, err := schemapkg.LoadSchema(*schemaPath)
 	if err != nil {
-		log.Fatalf("read schema: %v", err)
-	}
-	lexer := parser.NewLexer(string(schemaContent))
-	tokens := lexer.Tokenize()
-	p := parser.NewParser(tokens)
-	schema, err := p.Parse()
-	if err != nil {
-		log.Fatalf("parse schema: %v", err)
+		log.Fatalf("load schema: %v", err)
 	}
 
 	if os.Getenv("FOOKEE_DISABLE_ROOM_BUILTINS") != "true" {
-		if err := schemamerge.MergeBuiltinRooms(schema); err != nil {
+		if err := schemapkg.MergeBuiltinRooms(schema); err != nil {
 			log.Fatalf("merge builtin rooms: %v", err)
 		}
 	}
