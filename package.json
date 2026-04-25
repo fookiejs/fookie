@@ -1,0 +1,30 @@
+{
+  "name": "fookie",
+  "version": "0.0.1",
+  "description": "Fookie — distributed backend framework",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "eslint packages --ext .ts,.tsx",
+    "format": "prettier --write packages",
+    "format:check": "prettier --check packages",
+    "clean": "npm run clean --workspaces && rimraf node_modules"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "rimraf": "^5.0.7",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

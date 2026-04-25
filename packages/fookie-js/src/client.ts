@@ -1,16 +1,9 @@
 import { subscribe as wsSubscribe } from './subscribe.js'
 
 export interface FookieOptions {
-  /** HTTP endpoint, e.g. "http://localhost:8080/graphql" */
   url: string
-  /**
-   * WebSocket endpoint, e.g. "ws://localhost:8080/graphql/ws"
-   * Auto-derived from `url` if omitted (http→ws, https→wss, appends /ws).
-   */
   wsUrl?: string
-  /** Admin key for privileged operations (X-Fookie-Admin-Key header) */
   adminKey?: string
-  /** Bearer token for authenticated operations */
   token?: string
 }
 
@@ -31,7 +24,6 @@ export class FookieClient {
     if (opts.wsUrl) {
       this.wsUrl = opts.wsUrl
     } else {
-      // Derive ws(s):// from http(s):// and ensure path ends with /ws
       const httpUrl = opts.url.replace(/^http/, 'ws')
       this.wsUrl = httpUrl.endsWith('/ws') ? httpUrl : httpUrl + '/ws'
     }
@@ -49,13 +41,6 @@ export class FookieClient {
     }
   }
 
-  /**
-   * Execute a GraphQL query.
-   * @example
-   *   const data = await fookie.query<{ allBankWallet: Wallet[] }>(
-   *     `query { allBankWallet { id balance } }`
-   *   )
-   */
   async query<T = unknown>(
     gql: string,
     variables?: Record<string, unknown>,
@@ -63,16 +48,6 @@ export class FookieClient {
     return this._send<T>(gql, variables)
   }
 
-  /**
-   * Execute a GraphQL mutation.
-   * @example
-   *   const data = await fookie.mutate<{ createBankWallet: Wallet }>(
-   *     `mutation CreateWallet($body: BankWalletInput!) {
-   *        createBankWallet(body: $body) { id }
-   *      }`,
-   *     { body: { address: "0x1", balance: 1000 } }
-   *   )
-   */
   async mutate<T = unknown>(
     gql: string,
     variables?: Record<string, unknown>,
@@ -80,18 +55,6 @@ export class FookieClient {
     return this._send<T>(gql, variables)
   }
 
-  /**
-   * Subscribe to a GraphQL subscription over WebSocket (graphql-transport-ws).
-   * Returns an `unsubscribe` function.
-   *
-   * @example
-   *   const unsub = fookie.subscribe(
-   *     `subscription { entity_events(model: "WalletTransfer") { op payload_json } }`,
-   *     (event) => console.log(event.data),
-   *   )
-   *   // later:
-   *   unsub()
-   */
   subscribe(
     gql: string,
     onData: (response: GraphQLResponse) => void,

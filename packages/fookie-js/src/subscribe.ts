@@ -1,8 +1,6 @@
 import { createClient, type Client } from 'graphql-ws'
 import type { GraphQLResponse } from './client.js'
 
-// Single shared client per (wsUrl + connectionParams) combo.
-// Keyed by JSON-serialised options so different credentials get separate connections.
 const clientCache = new Map<string, Client>()
 
 function getClient(
@@ -16,7 +14,6 @@ function getClient(
       createClient({
         url: wsUrl,
         connectionParams,
-        // Auto-reconnect with exponential back-off
         retryAttempts: Infinity,
         shouldRetry: () => true,
       }),
@@ -35,12 +32,6 @@ export interface SubscribeOptions {
   onComplete?: () => void
 }
 
-/**
- * Subscribe to a GraphQL subscription using the graphql-transport-ws protocol.
- * Returns an `unsubscribe` function.
- *
- * Reuses a single WebSocket connection per (wsUrl + credentials) combo.
- */
 export function subscribe(opts: SubscribeOptions): () => void {
   const client = getClient(opts.wsUrl, opts.connectionParams)
 

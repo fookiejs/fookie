@@ -24,6 +24,9 @@
   },
   "keywords": ["fookie", "worker", "external", "handler", "sdk"],
   "license": "MIT",
+  "dependencies": {
+    "@fookie/types": "*"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "rimraf": "^6.0.1",
