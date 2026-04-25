@@ -1,0 +1,63 @@
+# Fookie — single clean image, no bundled DB or Redis.
+# All connections come from environment variables.
+#
+# Build:
+#   docker build -f docker/Dockerfile.fookie -t fookiejs/fookie .
+#
+# Run modes (FOOKIE_MODE):
+#   server  — GraphQL HTTP + WebSocket server only           (default)
+#   worker  — Outbox worker only (scale separately)
+#   both    — server + worker in one container (dev / single-node)
+
+# ── Stage 1: build ───────────────────────────────────────────────────────────
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+      -ldflags="-s -w" \
+      -o /out/fookie-server ./cmd/server && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -ldflags="-s -w" \
+      -o /out/fookie-worker ./cmd/worker
+
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /out/fookie-server /app/fookie-server
+COPY --from=builder /out/fookie-worker /app/fookie-worker
+COPY docker/fookie-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# ── Runtime config (all overridable via env / docker-compose) ─────────────────
+# DB & Redis — no defaults on purpose so misconfiguration fails loudly.
+ENV DB_URL=""
+ENV REDIS_URL=""
+
+# Observability — optional; omit to disable tracing / log shipping.
+ENV OTLP_ENDPOINT=""
+ENV LOKI_PUSH_URL=""
+
+# App config
+ENV SCHEMA_PATH="/schema.fql"
+ENV PORT=":8080"
+ENV FOOKEE_SERVICE_NAME="fookie"
+
+# Mode: server | worker | both
+ENV FOOKIE_MODE="server"
+
+# Schema is expected at /schema.fql — mount your .fql file here.
+VOLUME ["/schema.fql"]
+
+EXPOSE 8080
+
+ENTRYPOINT ["/entrypoint.sh"]

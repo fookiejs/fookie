@@ -1,9 +1,0 @@
-FROM docker:27-cli
-
-WORKDIR /workspace
-
-COPY . /workspace
-COPY docker/platform-entrypoint.sh /usr/local/bin/fookie-platform
-RUN chmod +x /usr/local/bin/fookie-platform
-
-ENTRYPOINT ["/usr/local/bin/fookie-platform"]

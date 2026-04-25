@@ -1,0 +1,223 @@
+###############################################################################
+# Fookie — single docker-compose.yml
+#
+# Usage:
+#   docker compose up -d                            # app + postgres + redis
+#   docker compose --profile observability up -d   # + Grafana hub (full stack)
+#   docker compose build                            # (re)build fookie image
+#
+# Override any variable in .env (copy from .env.example):
+#   DB_URL, REDIS_URL, OTLP_ENDPOINT, LOKI_PUSH_URL, FOOKIE_PORT, ...
+###############################################################################
+
+name: fookie
+
+x-fookie-common: &fookie-common
+  image: fookiejs/fookie
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.fookie
+  environment:
+    DB_URL:       ${DB_URL:-postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable}
+    REDIS_URL:    ${REDIS_URL:-redis://redis:6379}
+    SCHEMA_PATH:  /schema.fql
+    # Observability — automatically wired when running with --profile observability
+    OTLP_ENDPOINT:  ${OTLP_ENDPOINT:-}
+    LOKI_PUSH_URL:  ${LOKI_PUSH_URL:-}
+  volumes:
+    - ${SCHEMA_FILE:-./demo/schema.fql}:/schema.fql:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+
+  # ── Data layer ──────────────────────────────────────────────────────────────
+  # Set DB_URL in .env to point to an external Postgres and disable this service:
+  #   docker compose up -d --scale postgres=0 fookie-server fookie-worker redis
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER:     fookie
+      POSTGRES_PASSWORD: fookie_dev
+      POSTGRES_DB:       fookie
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fookie"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Fookie application ──────────────────────────────────────────────────────
+  fookie-server:
+    <<: *fookie-common
+    environment:
+      DB_URL:             ${DB_URL:-postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable}
+      REDIS_URL:          ${REDIS_URL:-redis://redis:6379}
+      SCHEMA_PATH:        /schema.fql
+      FOOKIE_MODE:        server
+      PORT:               ":8080"
+      FOOKEE_SERVICE_NAME: fookie-server
+      OTLP_ENDPOINT:      ${OTLP_ENDPOINT:-}
+      LOKI_PUSH_URL:      ${LOKI_PUSH_URL:-}
+    ports:
+      - "${FOOKIE_PORT:-8080}:8080"
+
+  fookie-worker:
+    <<: *fookie-common
+    environment:
+      DB_URL:             ${DB_URL:-postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable}
+      REDIS_URL:          ${REDIS_URL:-redis://redis:6379}
+      SCHEMA_PATH:        /schema.fql
+      FOOKIE_MODE:        worker
+      FOOKEE_SERVICE_NAME: fookie-worker
+      METRICS_LISTEN:     ":9091"
+      OTLP_ENDPOINT:      ${OTLP_ENDPOINT:-}
+      LOKI_PUSH_URL:      ${LOKI_PUSH_URL:-}
+    # No static port — scale freely with --scale fookie-worker=N
+
+  # ── Observability (opt-in) ──────────────────────────────────────────────────
+  # Start with: docker compose --profile observability up -d
+  # Grafana → http://localhost:3000  (anonymous admin, no login)
+
+  tempo:
+    profiles: [observability]
+    image: grafana/tempo:2.3.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./deploy/compose/config/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    restart: unless-stopped
+
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./deploy/compose/config/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP HTTP (internal)
+      - "8889:8889"   # Prometheus metrics
+    depends_on: [tempo]
+    restart: unless-stopped
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v2.50.1
+    volumes:
+      - ./deploy/compose/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/compose/config/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    depends_on: [otel-collector]
+    restart: unless-stopped
+
+  loki:
+    profiles: [observability]
+    image: grafana/loki:2.9.4
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./deploy/compose/config/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    restart: unless-stopped
+
+  promtail:
+    profiles: [observability]
+    image: grafana/promtail:2.9.4
+    volumes:
+      - ./deploy/compose/config/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+    depends_on: [loki]
+    restart: unless-stopped
+
+  postgres-exporter:
+    profiles: [observability]
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      DATA_SOURCE_NAME: "postgresql://grafana_ro:grafana_ro_dev@postgres:5432/fookie?sslmode=disable"
+    depends_on: [postgres]
+    restart: unless-stopped
+
+  redis-exporter:
+    profiles: [observability]
+    image: oliver006/redis_exporter:v1.58.0
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    depends_on: [redis]
+    restart: unless-stopped
+
+  cadvisor:
+    profiles: [observability]
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - --housekeeping_interval=10s
+      - --docker_only=true
+    restart: unless-stopped
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:10.3.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED:      "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE:     Admin
+      GF_AUTH_HIDE_LOGIN_FORM:        "true"
+      GF_SECURITY_ADMIN_PASSWORD:     admin
+      GF_USERS_DEFAULT_THEME:         dark
+      GF_INSTANCE_NAME:               Fookie
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED:      "false"
+      GF_EXPLORE_ENABLED:             "true"
+      GF_LOG_LEVEL:                   warn
+      GF_INSTALL_PLUGINS:             "yesoreyeram-infinity-datasource,grafana-polystat-panel"
+      GF_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/json/00-home.json
+    volumes:
+      - ./deploy/compose/config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on: [loki, prometheus, tempo]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
