@@ -54,14 +54,11 @@ myapp/
 ```fql
 model User {
   fields {
-    name   string
-    email  string
-    role   string
+    name       string
+    email      string --unique
+    role       string
+    created_at timestamp --index desc
   }
-
-  // Indexes — unique email per non-deleted user
-  @@unique([email], where: "deleted_at IS NULL")
-  @@index([created_at DESC])
 
   create {}
   read   {}
@@ -71,9 +68,10 @@ model User {
 
 model Post {
   fields {
-    title   string
-    body    string
-    author  id
+    title      string
+    body       string
+    author     id     --index
+    created_at timestamp
   }
 
   @@index([author, created_at DESC])

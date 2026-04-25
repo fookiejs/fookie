@@ -280,7 +280,41 @@ func (p *Parser) parseModel() (*ast.Model, error) {
 	if _, err := p.expect(TOKEN_RBRACE); err != nil {
 		return nil, err
 	}
+	resolveFieldConstraints(model)
 	return model, nil
+}
+
+// resolveFieldConstraints converts field-level --unique / --unique("group") annotations
+// into IndexDef entries on the model. Groups fields sharing the same group name into a
+// single composite unique index (in declaration order).
+func resolveFieldConstraints(m *ast.Model) {
+	// groupOrder preserves composite group declaration order
+	groupOrder := []string{}
+	groups := map[string][]string{}
+
+	for _, f := range m.Fields {
+		for _, c := range f.Constraints {
+			if c == "--unique" {
+				m.Indexes = append(m.Indexes, ast.IndexDef{
+					Unique:  true,
+					Columns: []string{f.Name},
+				})
+			} else if strings.HasPrefix(c, "--unique:") {
+				group := strings.TrimPrefix(c, "--unique:")
+				if _, exists := groups[group]; !exists {
+					groupOrder = append(groupOrder, group)
+				}
+				groups[group] = append(groups[group], f.Name)
+			}
+		}
+	}
+
+	for _, group := range groupOrder {
+		m.Indexes = append(m.Indexes, ast.IndexDef{
+			Unique:  true,
+			Columns: groups[group],
+		})
+	}
 }
 
 // parseIndexDef parses: ([field ASC|DESC, ...], where: "expr")

@@ -425,6 +425,9 @@ func (sg *SQLGenerator) modelIndexDDLs(m *ast.Model) []string {
 		whereClause := ""
 		if idx.Where != "" {
 			whereClause = fmt.Sprintf(" WHERE %s", idx.Where)
+		} else if idx.Unique {
+			// All tables carry deleted_at — partial index excludes soft-deleted rows
+			whereClause = ` WHERE "deleted_at" IS NULL`
 		}
 
 		out = append(out, fmt.Sprintf(

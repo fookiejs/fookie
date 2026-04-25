@@ -345,17 +345,30 @@ func (l *Lexer) NextToken() Token {
 			l.skipWhitespace()
 			word := l.readIdentifier()
 			constraint := "--" + word
-			pos := l.pos
 			l.skipWhitespace()
-			if l.cur() == 'd' {
-				extra := l.readIdentifier()
-				if extra == "desc" {
-					constraint += " desc"
-				} else {
-					l.pos = pos
+			// Optional ("group") argument: --unique("name") → "--unique:name"
+			if l.cur() == '(' {
+				l.eat() // consume (
+				l.skipWhitespace()
+				if l.cur() == '"' || l.cur() == '\'' {
+					arg := l.readString(l.cur())
+					constraint = "--" + word + ":" + arg
+				}
+				l.skipWhitespace()
+				if l.cur() == ')' {
+					l.eat() // consume )
 				}
 			} else {
-				l.pos = pos
+				// Optional desc qualifier: --index desc
+				pos := l.pos
+				if l.cur() == 'd' {
+					extra := l.readIdentifier()
+					if extra == "desc" {
+						constraint += " desc"
+					} else {
+						l.pos = pos
+					}
+				}
 			}
 			return Token{Type: TOKEN_CONSTRAINT, Value: constraint, LineNo: line, ColNo: col}
 		}
