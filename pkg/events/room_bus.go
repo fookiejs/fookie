@@ -10,27 +10,33 @@ import (
 )
 
 type RoomBus struct {
-	mu    sync.RWMutex
-	rooms map[string][]chan interface{}
-	rdb   *redis.Client // optional: nil = local-only mode
+	mu               sync.RWMutex
+	rooms            map[string][]chan interface{}
+	rdb              *redis.Client // optional: nil = local-only mode
+	subscriberMetric map[string]int // subscriber count per room (for cleanup)
 }
 
 func NewRoomBus() *RoomBus {
-	return &RoomBus{rooms: make(map[string][]chan interface{})}
+	return &RoomBus{
+		rooms:            make(map[string][]chan interface{}),
+		subscriberMetric: make(map[string]int),
+	}
 }
 
 func NewRoomBusWithRedis(rdb *redis.Client) *RoomBus {
 	rb := &RoomBus{
-		rooms: make(map[string][]chan interface{}),
-		rdb:   rdb,
+		rooms:            make(map[string][]chan interface{}),
+		rdb:              rdb,
+		subscriberMetric: make(map[string]int),
 	}
 	return rb
 }
 
 func (rb *RoomBus) Subscribe(roomID string) (ch chan interface{}, cancel func()) {
-	ch = make(chan interface{}, 32)
+	ch = make(chan interface{}, 8) // Reduced from 32: room msgs are sparse
 	rb.mu.Lock()
 	rb.rooms[roomID] = append(rb.rooms[roomID], ch)
+	rb.subscriberMetric[roomID]++
 	rb.mu.Unlock()
 	cancel = func() {
 		rb.mu.Lock()
@@ -42,14 +48,32 @@ func (rb *RoomBus) Subscribe(roomID string) (ch chan interface{}, cancel func())
 				out = append(out, c)
 			}
 		}
+		// Decrement before cleanup
+		rb.subscriberMetric[roomID]--
 		if len(out) == 0 {
+			// Aggressive cleanup: remove room completely
 			delete(rb.rooms, roomID)
+			delete(rb.subscriberMetric, roomID)
 		} else {
 			rb.rooms[roomID] = out
 		}
 		close(ch)
 	}
 	return ch, cancel
+}
+
+// SubscriberCount returns the number of active subscribers for a room (for metrics).
+func (rb *RoomBus) SubscriberCount(roomID string) int {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+	return rb.subscriberMetric[roomID]
+}
+
+// RoomCount returns the number of active rooms with subscribers (for metrics).
+func (rb *RoomBus) RoomCount() int {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+	return len(rb.rooms)
 }
 
 // publishLocal sends message to all local subscribers of a room.
