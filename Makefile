@@ -1,11 +1,30 @@
-COMPOSE_DEMO   = -f demo/docker-compose.yml -f demo/compose.demo.yml
-COMPOSE_SCALE  = -f demo/docker-compose.yml -f deploy/compose/scale.yml
+COMPOSE_DEMO     = -f demo/docker-compose.yml -f demo/compose.demo.yml
+COMPOSE_SCALE    = -f demo/docker-compose.yml -f deploy/compose/scale.yml
 COMPOSE_PLATFORM = -f deploy/compose/postgres.yml -f deploy/compose/observability.yml -f deploy/compose/apps.yml
+
+# ---------------------------------------------------------------------------
+# Helm via Docker — no local Helm install needed.
+# Kubeconfig is mounted read-only from ~/.kube; override with KUBECONFIG_PATH.
+# ---------------------------------------------------------------------------
+KUBECONFIG_PATH ?= $(HOME)/.kube
+HELM_IMAGE      ?= alpine/helm:3
+# MSYS_NO_PATHCONV=1 prevents Git Bash from translating /workspace → C:/Program Files/Git/workspace.
+# The //workspace double-slash is a secondary guard for the -w flag.
+HELM = MSYS_NO_PATHCONV=1 docker run --rm \
+	-v "$(CURDIR):/workspace" \
+	-w //workspace \
+	-v "$(KUBECONFIG_PATH):/root/.kube:ro" \
+	$(HELM_IMAGE)
+
+HELM_CHART       = charts/fookie
+HELM_RELEASE    ?= fookie
+KUBE_NAMESPACE  ?= default
 
 .PHONY: help build build-fookie test test-unit test-integration run-server run-worker \
         postgres-up postgres-down redis-up redis-down \
         docker-up docker-down docker-clean \
         scale-up scale-down \
+        helm-deps helm-lint helm-template helm-install helm-upgrade helm-uninstall helm-status \
         clean parser
 
 help:
@@ -37,6 +56,17 @@ help:
 	@echo "  make scale-up          - Build + start 3 servers + 5 workers (no port conflicts)"
 	@echo "  make scale-down        - Stop scaled stack"
 	@echo "  Override: SERVERS=5 WORKERS=10 make scale-up"
+	@echo ""
+	@echo "Helm (no local install — runs via Docker):"
+	@echo "  make helm-deps         - Download chart dependencies (Bitnami Redis subchart)"
+	@echo "  make helm-lint         - Lint the Helm chart"
+	@echo "  make helm-template     - Render chart to stdout (dry-run / inspect)"
+	@echo "  make helm-install      - Install to cluster (uses ~/.kube/config)"
+	@echo "  make helm-upgrade      - Upgrade existing release"
+	@echo "  make helm-uninstall    - Delete release from cluster"
+	@echo "  make helm-status       - Show release status"
+	@echo "  Override: HELM_RELEASE=prod KUBE_NAMESPACE=fookie make helm-install"
+	@echo "  Override: KUBECONFIG_PATH=~/rancher.yaml make helm-install"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make lint              - Run linter"
@@ -155,6 +185,47 @@ scale-up: docker-build
 
 scale-down:
 	docker compose $(COMPOSE_SCALE) down
+
+# --- Helm (runs inside Docker, no local Helm required) --------------------
+
+# 1. Download subchart dependencies (Bitnami Redis).
+#    Run once after cloning, or after changing Chart.yaml.
+helm-deps:
+	$(HELM) dependency update $(HELM_CHART)
+
+# 2. Validate chart structure and values.
+helm-lint: helm-deps
+	$(HELM) lint $(HELM_CHART)
+
+# 3. Render templates to stdout — useful for reviewing generated YAML.
+#    Does NOT require a running cluster.
+helm-template: helm-deps
+	$(HELM) template $(HELM_RELEASE) $(HELM_CHART) \
+		--namespace $(KUBE_NAMESPACE)
+
+# 4. First-time install to cluster.
+helm-install: helm-deps
+	$(HELM) install $(HELM_RELEASE) $(HELM_CHART) \
+		--namespace $(KUBE_NAMESPACE) \
+		--create-namespace \
+		--wait
+
+# 5. Upgrade an existing release (idempotent — safe to re-run).
+helm-upgrade: helm-deps
+	$(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+		--namespace $(KUBE_NAMESPACE) \
+		--create-namespace \
+		--wait
+
+# 6. Delete release (keeps PVCs by default).
+helm-uninstall:
+	$(HELM) uninstall $(HELM_RELEASE) \
+		--namespace $(KUBE_NAMESPACE)
+
+# 7. Show current release status.
+helm-status:
+	$(HELM) status $(HELM_RELEASE) \
+		--namespace $(KUBE_NAMESPACE)
 
 docker-shell-postgres:
 	docker compose $(COMPOSE_DEMO) exec postgres psql -U fookie -d fookie
