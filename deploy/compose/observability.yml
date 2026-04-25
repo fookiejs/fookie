@@ -4,6 +4,7 @@ services:
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./config/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
     ports:
       - "3200:3200"
 
@@ -22,11 +23,13 @@ services:
     image: prom/prometheus:v2.50.1
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=6h
+      - --storage.tsdb.retention.time=30d
       - --web.enable-lifecycle
     depends_on:
       - otel-collector
@@ -36,6 +39,7 @@ services:
     command: ["-config.file=/etc/loki/config.yaml"]
     volumes:
       - ./config/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
     ports:
       - "3100:3100"
 
@@ -47,6 +51,37 @@ services:
     command: ["-config.file=/etc/promtail/config.yml"]
     depends_on:
       - loki
+
+  # ── Exporters — give Grafana cluster-wide visibility ──────────────────────
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      # Uses the `grafana_ro` read-only role created by scripts/grafana-bootstrap.sql.
+      DATA_SOURCE_NAME: "postgresql://grafana_ro:grafana_ro_dev@postgres:5432/fookie?sslmode=disable"
+    ports:
+      - "9187:9187"
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.58.0
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    ports:
+      - "9121:9121"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8088:8080"
+    command:
+      - --housekeeping_interval=10s
+      - --docker_only=true
 
   grafana:
     image: grafana/grafana:10.3.1
@@ -64,11 +99,22 @@ services:
       GF_HELP_ENABLED: "false"
       GF_EXPLORE_ENABLED: "true"
       GF_LOG_LEVEL: warn
+      # Infinity datasource drives the GraphQL explorer dashboard.
+      GF_INSTALL_PLUGINS: "yesoreyeram-infinity-datasource,grafana-polystat-panel"
+      # Default landing page = Home dashboard (configured as home in preferences).
+      GF_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/json/00-home.json
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
     ports:
       - "3000:3000"
     depends_on:
       - loki
       - prometheus
       - tempo
+
+volumes:
+  grafana_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:

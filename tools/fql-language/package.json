@@ -45,6 +45,12 @@
         "scopeName": "source.fql",
         "path": "./syntaxes/fql.tmLanguage.json"
       }
+    ],
+    "snippets": [
+      {
+        "language": "fql",
+        "path": "./snippets/fql.code-snippets"
+      }
     ]
   }
 }

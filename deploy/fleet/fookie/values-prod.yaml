@@ -1,0 +1,10 @@
+server:
+  replicas: 3
+  autoscaling:
+    enabled: true
+worker:
+  replicas: 4
+  autoscaling:
+    enabled: true
+observability:
+  enabled: false

@@ -1,0 +1,129 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Home", "type": "link", "url": "/d/fookie-home", "icon": "home" },
+    { "title": "Cluster", "type": "link", "url": "/d/fookie-cluster-ops", "icon": "cube" },
+    { "title": "Data Hub", "type": "link", "url": "/d/fookie-data-hub", "icon": "database" }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "PG up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }],
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "options": { "colorMode": "background", "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "pg_up", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Aktif bağlantılar",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 0 },
+      "id": 2,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 50 }, { "color": "red", "value": 90 }] } } },
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(pg_stat_activity_count{datname=\"fookie\"})", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Max bağlantı",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 0 },
+      "id": 3,
+      "options": { "textMode": "value", "graphMode": "none", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "pg_settings_max_connections", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "DB boyutu",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 0 },
+      "id": 4,
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "pg_database_size_bytes{datname=\"fookie\"}", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Cache hit oranı",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 0 },
+      "id": 5,
+      "fieldConfig": { "defaults": { "unit": "percentunit", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.9 }, { "color": "green", "value": 0.99 }] } } },
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "sum(rate(pg_stat_database_blks_hit{datname=\"fookie\"}[5m])) / clamp_min(sum(rate(pg_stat_database_blks_hit{datname=\"fookie\"}[5m]) + rate(pg_stat_database_blks_read{datname=\"fookie\"}[5m])), 0.001)", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Connections by state",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 6,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        { "expr": "sum by (state) (pg_stat_activity_count{datname=\"fookie\"})", "legendFormat": "{{state}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Transactions/s (commit vs rollback)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 7,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }, "unit": "ops" } },
+      "targets": [
+        { "expr": "rate(pg_stat_database_xact_commit{datname=\"fookie\"}[1m])", "legendFormat": "commit", "refId": "A" },
+        { "expr": "rate(pg_stat_database_xact_rollback{datname=\"fookie\"}[1m])", "legendFormat": "rollback", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Rows fetched / returned",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 8,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "rate(pg_stat_database_tup_fetched{datname=\"fookie\"}[1m])", "legendFormat": "fetched", "refId": "A" },
+        { "expr": "rate(pg_stat_database_tup_returned{datname=\"fookie\"}[1m])", "legendFormat": "returned", "refId": "B" },
+        { "expr": "rate(pg_stat_database_tup_inserted{datname=\"fookie\"}[1m])", "legendFormat": "inserted", "refId": "C" },
+        { "expr": "rate(pg_stat_database_tup_updated{datname=\"fookie\"}[1m])", "legendFormat": "updated", "refId": "D" },
+        { "expr": "rate(pg_stat_database_tup_deleted{datname=\"fookie\"}[1m])", "legendFormat": "deleted", "refId": "E" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Deadlocks",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 9,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "custom": { "drawStyle": "bars", "fillOpacity": 80 }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "targets": [
+        { "expr": "rate(pg_stat_database_deadlocks{datname=\"fookie\"}[5m])", "legendFormat": "deadlocks/s", "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["fookie", "postgres", "health"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Fookie — Database Health",
+  "uid": "fookie-db-health",
+  "version": 1
+}

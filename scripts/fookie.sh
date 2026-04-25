@@ -12,10 +12,21 @@
 
 set -euo pipefail
 
-COMMAND="${1:-help}"
+RAW_COMMAND="${1:-help}"
+PROFILE="${2:-${PROFILE:-full}}"
 
-COMPOSE_DEMO="-f demo/docker-compose.yml -f demo/compose.demo.yml"
-COMPOSE_SCALE="-f demo/docker-compose.yml -f deploy/compose/scale.yml"
+case "$RAW_COMMAND" in
+    start) COMMAND="docker-up" ;;
+    stop) COMMAND="docker-down" ;;
+    status) COMMAND="docker-status" ;;
+    logs) COMMAND="docker-logs" ;;
+    *) COMMAND="$RAW_COMMAND" ;;
+esac
+
+COMPOSE_FULL=(-f demo/docker-compose.yml -f demo/compose.demo.yml)
+COMPOSE_MIN=(-f demo/docker-compose.minimal.yml -f demo/compose.demo.yml)
+COMPOSE_SCALE_FULL=(-f demo/docker-compose.yml -f deploy/compose/scale.yml)
+COMPOSE_SCALE_MIN=(-f demo/docker-compose.minimal.yml -f deploy/compose/scale.yml)
 
 SERVERS="${SERVERS:-3}"
 WORKERS="${WORKERS:-5}"
@@ -45,20 +56,53 @@ helm_run() {
         "$HELM_IMAGE" "$@"
 }
 
+compose_args() {
+    if [[ "$PROFILE" == "minimal" ]]; then
+        printf '%s\n' "${COMPOSE_MIN[@]}"
+    else
+        printf '%s\n' "${COMPOSE_FULL[@]}"
+    fi
+}
+
+scale_compose_args() {
+    if [[ "$PROFILE" == "minimal" ]]; then
+        printf '%s\n' "${COMPOSE_SCALE_MIN[@]}"
+    else
+        printf '%s\n' "${COMPOSE_SCALE_FULL[@]}"
+    fi
+}
+
+run_compose() {
+    mapfile -t files < <(compose_args)
+    docker compose "${files[@]}" "$@"
+}
+
+run_scale_compose() {
+    mapfile -t files < <(scale_compose_args)
+    docker compose "${files[@]}" "$@"
+}
+
 case "$COMMAND" in
 
 help)
     cat <<'EOF'
 Fookie shell CLI  (Git Bash / Linux / macOS)
 ──────────────────────────────────────────────
+Primary commands:
+  ./fookie.sh start [full|minimal]
+  ./fookie.sh stop [full|minimal]
+  ./fookie.sh status [full|minimal]
+  ./fookie.sh logs [full|minimal]
+
 All-in-one image (postgres+redis+server+worker in one container):
   ./fookie.sh allinone-build     Build fookiejs/fookie image
   ./fookie.sh allinone-run       Run with demo/schema.fql on :8080
   ./fookie.sh allinone-run SCHEMA=/path/to/schema.fql
 
 Docker (split server+worker, for dev/scale):
-  ./fookie.sh docker-up          Build + start single server/worker
-  ./fookie.sh docker-down        Stop containers
+  ./fookie.sh docker-up          Build + start profile stack
+  ./fookie.sh docker-down        Stop profile stack
+  ./fookie.sh docker-status      Show profile stack status
   ./fookie.sh docker-clean       Stop + remove volumes
   ./fookie.sh docker-logs        Follow all logs
   ./fookie.sh docker-logs-server
@@ -74,6 +118,12 @@ Infra only:
   ./fookie.sh redis-up
   ./fookie.sh infra-down
 
+Grafana hub (Prometheus + Loki + Tempo + Grafana + exporters):
+  ./fookie.sh observability-up    Start only the observability stack
+  ./fookie.sh observability-down  Stop observability stack
+  ./fookie.sh hub                 Open Grafana in browser (http://localhost:3000)
+  ./fookie.sh grafana-bootstrap   Create read-only grafana_ro PG user
+
 Helm (no local Helm — runs via Docker):
   ./fookie.sh helm-deps          Download chart dependencies
   ./fookie.sh helm-lint          Lint chart
@@ -84,6 +134,7 @@ Helm (no local Helm — runs via Docker):
   ./fookie.sh helm-status        Show release status
 
 Env overrides:
+  PROFILE                        full|minimal
   SERVERS / WORKERS              Scale replica counts
   HELM_RELEASE                   Release name     (default: fookie)
   KUBE_NAMESPACE                 Namespace        (default: default)
@@ -112,31 +163,35 @@ allinone-run)
 
 docker-up)
     echo "Building images..."
-    docker compose $COMPOSE_DEMO build
+    run_compose build
     echo "Starting stack..."
-    docker compose $COMPOSE_DEMO up -d
+    run_compose up -d
     sleep 3
-    docker compose $COMPOSE_DEMO ps
+    run_compose ps
     ;;
 
 docker-down)
-    docker compose $COMPOSE_DEMO down
+    run_compose down
+    ;;
+
+docker-status)
+    run_compose ps
     ;;
 
 docker-clean)
-    docker compose $COMPOSE_DEMO down -v
+    run_compose down -v
     ;;
 
 docker-logs)
-    docker compose $COMPOSE_DEMO logs -f
+    run_compose logs -f
     ;;
 
 docker-logs-server)
-    docker compose $COMPOSE_DEMO logs -f fookie-server
+    run_compose logs -f fookie-server
     ;;
 
 docker-logs-worker)
-    docker compose $COMPOSE_DEMO logs -f fookie-worker
+    run_compose logs -f fookie-worker
     ;;
 
 # ── Infra ────────────────────────────────────────────────────────────────────
@@ -159,20 +214,58 @@ infra-down)
 
 scale-up)
     echo "Building images..."
-    docker compose $COMPOSE_DEMO build
+    run_compose build
     echo "Starting ${SERVERS} servers + ${WORKERS} workers..."
-    docker compose $COMPOSE_SCALE up -d \
+    run_scale_compose up -d \
         --scale fookie-server="$SERVERS" \
         --scale fookie-worker="$WORKERS"
     echo ""
-    docker compose $COMPOSE_SCALE ps
+    run_scale_compose ps
     echo ""
     echo "TIP: redis-cli monitor  →  watch LPUSH / BLPOP traffic"
     echo "TIP: ./fookie.sh docker-logs-worker"
     ;;
 
 scale-down)
-    docker compose $COMPOSE_SCALE down
+    run_scale_compose down
+    ;;
+
+# ── Grafana Hub ─────────────────────────────────────────────────────────────
+
+observability-up)
+    echo "Starting observability stack (Prometheus + Loki + Tempo + Grafana + exporters)..."
+    docker compose -f deploy/compose/postgres.yml -f deploy/compose/observability.yml up -d
+    sleep 3
+    echo ""
+    echo "Grafana        → http://localhost:3000   (anonymous admin)"
+    echo "Prometheus     → http://localhost:9090"
+    echo "Loki           → http://localhost:3100"
+    echo "Tempo          → http://localhost:3200"
+    echo "cAdvisor       → http://localhost:8088"
+    echo ""
+    echo "Bootstrap grafana_ro PG user:"
+    echo "  ./fookie.sh grafana-bootstrap"
+    ;;
+
+observability-down)
+    docker compose -f deploy/compose/postgres.yml -f deploy/compose/observability.yml down
+    ;;
+
+hub)
+    URL="http://localhost:3000"
+    echo "Opening $URL ..."
+    if command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL"
+    elif command -v open >/dev/null 2>&1; then open "$URL"
+    elif command -v start >/dev/null 2>&1; then start "$URL"
+    else echo "Browser açamadım — manuel: $URL"
+    fi
+    ;;
+
+grafana-bootstrap)
+    echo "Creating read-only grafana_ro PG user..."
+    docker compose -f deploy/compose/postgres.yml exec -T postgres \
+        psql -U fookie -d fookie < scripts/grafana-bootstrap.sql
+    echo "Done. Grafana PostgreSQL datasource artık çalışır."
     ;;
 
 # ── Helm ─────────────────────────────────────────────────────────────────────

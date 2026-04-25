@@ -45,6 +45,35 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
+          {{- if .Values.server.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.server.probes.startup.path | quote }}
+              port: http
+            initialDelaySeconds: {{ .Values.server.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.server.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.server.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.server.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.server.probes.readiness.path | quote }}
+              port: http
+            initialDelaySeconds: {{ .Values.server.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.server.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.server.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.server.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.server.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.server.probes.liveness.path | quote }}
+              port: http
+            initialDelaySeconds: {{ .Values.server.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.server.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.server.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.server.probes.liveness.failureThreshold }}
+          {{- end }}
           volumeMounts:
             - name: schema
               mountPath: {{ .Values.schema.mountPath }}

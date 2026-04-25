@@ -1,0 +1,124 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Home", "type": "link", "url": "/d/fookie-home", "icon": "home" },
+    { "title": "Cluster", "type": "link", "url": "/d/fookie-cluster-ops", "icon": "cube" },
+    { "title": "DB Health", "type": "link", "url": "/d/fookie-db-health", "icon": "database" }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Redis up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }],
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "options": { "colorMode": "background", "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "redis_up", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Client connections",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 0 },
+      "id": 2,
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "redis_connected_clients", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Memory used",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 0 },
+      "id": 3,
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "redis_memory_used_bytes", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Toplam key sayısı",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 0 },
+      "id": 4,
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(redis_db_keys)", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Keyspace hit ratio",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 0 },
+      "id": 5,
+      "fieldConfig": { "defaults": { "unit": "percentunit", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.8 }, { "color": "green", "value": 0.95 }] } } },
+      "options": { "textMode": "value", "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "rate(redis_keyspace_hits_total[5m]) / clamp_min(rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m]), 0.001)", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Ops/s (total commands)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 6,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20 }, "unit": "ops" } },
+      "targets": [{ "expr": "rate(redis_commands_processed_total[1m])", "legendFormat": "cmds/s", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Memory over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 7,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }, "unit": "bytes" } },
+      "targets": [
+        { "expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A" },
+        { "expr": "redis_memory_used_rss_bytes", "legendFormat": "rss", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Pub/Sub kanalı",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 8,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "redis_pubsub_channels", "legendFormat": "channels", "refId": "A" },
+        { "expr": "redis_pubsub_patterns", "legendFormat": "patterns", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Evictions / expirations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 9,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 60 } } },
+      "targets": [
+        { "expr": "rate(redis_evicted_keys_total[5m])", "legendFormat": "evicted/s", "refId": "A" },
+        { "expr": "rate(redis_expired_keys_total[5m])", "legendFormat": "expired/s", "refId": "B" }
+      ]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["fookie", "redis", "health"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Fookie — Redis Health",
+  "uid": "fookie-redis-health",
+  "version": 1
+}

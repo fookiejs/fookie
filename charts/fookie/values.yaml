@@ -18,6 +18,27 @@ server:
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
+  probes:
+    startup:
+      enabled: true
+      path: /health
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      failureThreshold: 24
+    readiness:
+      enabled: true
+      path: /health
+      initialDelaySeconds: 2
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3
+    liveness:
+      enabled: true
+      path: /health
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
 
 worker:
   image: fookie-worker
@@ -36,6 +57,24 @@ worker:
     minReplicas: 2
     maxReplicas: 20
     targetCPUUtilizationPercentage: 60
+  probes:
+    startup:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      failureThreshold: 24
+    readiness:
+      enabled: true
+      initialDelaySeconds: 2
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3
+    liveness:
+      enabled: true
+      initialDelaySeconds: 20
+      periodSeconds: 15
+      timeoutSeconds: 2
+      failureThreshold: 3
 
 database:
   url: "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"
@@ -52,7 +91,59 @@ redis:
   architecture: standalone
 
 observability:
+  # enabled=true pulls kube-prometheus-stack (Prometheus + Grafana +
+  # kube-state-metrics + node-exporter) as a subchart. Turn off for
+  # production clusters that already run a central observability stack.
+  enabled: true
   otlpEndpoint: "otel-collector:4318"
+
+  # Provision Fookie dashboards + datasources into the bundled Grafana.
+  # They mount as ConfigMaps picked up by the Grafana sidecar.
+  dashboards:
+    enabled: true
+  datasources:
+    postgres:
+      enabled: true
+      host: "postgres:5432"
+      database: "fookie"
+      user: "grafana_ro"
+      password: "grafana_ro_dev"
+    graphql:
+      enabled: true
+      url: "http://{{ .Release.Name }}-fookie-server:8080/graphql"
+
+  logs:
+    # Toggles loki-stack subchart (Loki + Promtail).
+    enabled: false
+
+  # kube-prometheus-stack overrides — keep Grafana anonymous-admin for dev.
+  grafana:
+    adminPassword: admin
+    defaultDashboardsEnabled: true
+    grafana.ini:
+      auth.anonymous:
+        enabled: true
+        org_role: Admin
+        hide_login_form: true
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        searchNamespace: ALL
+      datasources:
+        enabled: true
+        label: grafana_datasource
+        searchNamespace: ALL
+    plugins:
+      - yesoreyeram-infinity-datasource
+      - grafana-polystat-panel
+
+  prometheus:
+    prometheusSpec:
+      retention: 30d
+      # Auto-discover ServiceMonitors regardless of label selector.
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
 
 schema:
   mountPath: /app/schema

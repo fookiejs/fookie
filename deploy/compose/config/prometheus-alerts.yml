@@ -1,0 +1,66 @@
+groups:
+  - name: fookie-cluster
+    interval: 30s
+    rules:
+      - alert: FookieServerDown
+        expr: up{job="fookie-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: fookie-server
+        annotations:
+          summary: "fookie-server instance down"
+          description: "{{ $labels.instance }} unreachable for 1m+."
+
+      - alert: FookieWorkerDown
+        expr: up{job="fookie-worker"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: fookie-worker
+        annotations:
+          summary: "fookie-worker instance down"
+          description: "{{ $labels.instance }} unreachable for 2m+."
+
+      - alert: HighErrorRate
+        expr: |
+          100 * sum(rate(fookie_executor_operations_total{result="error"}[5m]))
+              / clamp_min(sum(rate(fookie_executor_operations_total[5m])), 0.001)
+          > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Error rate > 5% for 5m"
+          description: "Executor operations are failing at {{ $value | printf \"%.1f\" }}%."
+
+      - alert: DBConnectionPoolExhausted
+        expr: |
+          (pg_stat_activity_count{datname="fookie"} / pg_settings_max_connections) > 0.9
+        for: 3m
+        labels:
+          severity: critical
+          component: postgres
+        annotations:
+          summary: "PostgreSQL connection pool > 90%"
+          description: "Connection usage at {{ $value | printf \"%.0f%%\" }}."
+
+      - alert: OutboxBacklog
+        expr: fookie_outbox_pending > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox pending > 10k"
+          description: "{{ $value }} events waiting to publish — workers falling behind."
+
+      - alert: RedisMemoryHigh
+        expr: |
+          (redis_memory_used_bytes / redis_memory_max_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Redis memory > 85%"
+          description: "Used {{ $value | printf \"%.0f%%\" }} of maxmemory."

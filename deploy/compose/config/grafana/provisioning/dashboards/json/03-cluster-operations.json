@@ -1,0 +1,117 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Home", "type": "link", "url": "/d/fookie-home", "icon": "home" },
+    { "title": "Data Hub", "type": "link", "url": "/d/fookie-data-hub", "icon": "database" },
+    { "title": "GraphQL", "type": "link", "url": "/d/fookie-graphql", "icon": "bolt" }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Servis durumu",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "expr": "max(up{job=\"fookie-server\"})", "refId": "A", "legendFormat": "fookie-server" },
+        { "expr": "max(up{job=\"fookie-worker\"})", "refId": "B", "legendFormat": "fookie-worker" },
+        { "expr": "max(up{job=\"postgres\"})", "refId": "C", "legendFormat": "postgres" },
+        { "expr": "max(up{job=\"redis\"})", "refId": "D", "legendFormat": "redis" },
+        { "expr": "max(up{job=\"otel-collector\"})", "refId": "E", "legendFormat": "otel-collector" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Replica sayısı",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 5 },
+      "id": 2,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "none" } },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "expr": "count(up{job=\"fookie-server\"} == 1)", "legendFormat": "fookie-server", "refId": "A" },
+        { "expr": "count(up{job=\"fookie-worker\"} == 1)", "legendFormat": "fookie-worker", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Toplam ops/s",
+      "type": "timeseries",
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 5 },
+      "id": 3,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "showPoints": "never" }, "unit": "ops" } },
+      "targets": [
+        { "expr": "sum by (job) (rate(fookie_executor_operations_total[1m]))", "legendFormat": "{{job}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Container CPU kullanımı",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 10 },
+      "id": 4,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }, "unit": "percentunit" } },
+      "targets": [
+        { "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\".+\"}[2m]))", "legendFormat": "{{name}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Container memory (RSS)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 10 },
+      "id": 5,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }, "unit": "bytes" } },
+      "targets": [
+        { "expr": "sum by (name) (container_memory_rss{name=~\".+\"})", "legendFormat": "{{name}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "title": "Servis endpoints (instance bazında)",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 19 },
+      "id": 6,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } } },
+      "options": { "showHeader": true, "sortBy": [{ "desc": false, "displayName": "job" }] },
+      "targets": [
+        { "expr": "up", "format": "table", "instant": true, "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["fookie", "cluster", "operations"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timezone": "browser",
+  "title": "Fookie — Cluster Operations",
+  "uid": "fookie-cluster-ops",
+  "version": 1
+}

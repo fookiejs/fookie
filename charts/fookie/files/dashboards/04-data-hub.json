@@ -1,0 +1,121 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Home", "type": "link", "url": "/d/fookie-home", "icon": "home" },
+    { "title": "Cluster", "type": "link", "url": "/d/fookie-cluster-ops", "icon": "cube" },
+    { "title": "GraphQL", "type": "link", "url": "/d/fookie-graphql", "icon": "bolt" }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Toplam tablo sayısı",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value", "graphMode": "none", "colorMode": "value" },
+      "targets": [
+        { "format": "table", "rawSql": "SELECT count(*) AS value FROM information_schema.tables WHERE table_schema = 'public';", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Toplam DB boyutu",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value", "graphMode": "none", "colorMode": "value" },
+      "targets": [
+        { "format": "table", "rawSql": "SELECT pg_database_size(current_database()) AS value;", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Aktif bağlantı",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 50 }, { "color": "red", "value": 100 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value", "graphMode": "area", "colorMode": "value" },
+      "targets": [
+        { "format": "table", "rawSql": "SELECT count(*) AS value FROM pg_stat_activity WHERE state = 'active';", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Outbox bekleyen",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 100 }, { "color": "red", "value": 10000 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value", "graphMode": "area", "colorMode": "value" },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT COALESCE((SELECT count(*) FROM outbox WHERE published_at IS NULL), 0) AS value;",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Tablo başına satır sayısı (top 20)",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 4 },
+      "id": 5,
+      "options": { "showHeader": true, "sortBy": [{ "desc": true, "displayName": "rows" }] },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT relname AS table, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(relid)) AS size FROM pg_stat_user_tables ORDER BY n_live_tup DESC LIMIT 20;",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Tablo boyutları (top 20)",
+      "type": "bargauge",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 4 },
+      "id": 6,
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "continuous-BlPu" } } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT relname AS metric, pg_total_relation_size(relid) AS value FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 20;",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Son 10 dk row growth (insert - delete)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "id": 7,
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 }, "unit": "none" } },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT now() AS time, relname AS metric, n_tup_ins - n_tup_del AS value FROM pg_stat_user_tables ORDER BY value DESC LIMIT 15;",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["fookie", "data", "postgres"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Fookie — Data Hub",
+  "uid": "fookie-data-hub",
+  "version": 1
+}
