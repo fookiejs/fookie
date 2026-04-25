@@ -19,19 +19,28 @@ import (
 	schemapkg "github.com/fookiejs/fookie/pkg/schema"
 )
 
-const usage = `Fookie CLI
+const cliVersion = "0.1.0"
+
+const usage = `Fookie CLI v` + cliVersion + `
 
 Usage:
-  fookie dlq list          [--db <url>] [--limit N]
-  fookie dlq retry <id>    [--db <url>]
-  fookie dlq retry-all     [--db <url>]
-  fookie dlq purge         [--db <url>] [--before 2024-01-01]
-  fookie migrate plan    [--schema <file>] [--db <url>]
-  fookie migrate apply   [--schema <file>] [--db <url>] [--label <name>]
-  fookie migrate history [--db <url>]
-  fookie serve           [--schema <file>] [--db <url>] [--port <:8080>]
-  fookie init <dir>
-  fookie doctor
+  fookie init <dir>                    scaffold schema.fql + .env
+  fookie doctor                        check required tools
+  fookie serve      [--schema] [--db] [--port]   start fookie-server
+  fookie migrate plan    [--schema] [--db]        show pending DDL
+  fookie migrate apply   [--schema] [--db] [--label]  apply DDL
+  fookie migrate history [--db]                   show applied migrations
+  fookie dlq list        [--db] [--limit N]       list failed jobs
+  fookie dlq retry <id>  [--db]                   re-queue one job
+  fookie dlq retry-all   [--db]                   re-queue all failed jobs
+  fookie dlq purge       [--db] [--before date]   delete old failures
+  fookie helm <args>                   passthrough to helm
+
+Common flags:
+  --schema <path>   path to .fql file or directory (env: SCHEMA_PATH)
+  --db <url>        PostgreSQL connection string   (env: DB_URL)
+
+See docs/getting-started.md for a full walkthrough.
 `
 
 func main() {
@@ -51,6 +60,8 @@ func main() {
 		cmdInit(os.Args[2:])
 	case "doctor":
 		cmdDoctor()
+	case "version", "--version", "-v":
+		fmt.Printf("fookie v%s\n", cliVersion)
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	// Legacy docker/helm wrappers kept for backward compat
