@@ -1,0 +1,40 @@
+services:
+  fookie-server:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.server
+    environment:
+      DB_URL: postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable
+      PORT: ":8080"
+      SCHEMA_PATH: /app/schema/schema.fql
+      FOOKEE_SERVICE_NAME: fookie-server
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../demo/schema.fql:/app/schema/schema.fql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["/app/server", "-db", "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"]
+
+  fookie-worker:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      DB_URL: postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable
+      SCHEMA_PATH: /app/schema/schema.fql
+      FOOKEE_SERVICE_NAME: fookie-worker
+      METRICS_LISTEN: ":9091"
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ../../demo/schema.fql:/app/schema/schema.fql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["/app/worker", "-db", "postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable"]

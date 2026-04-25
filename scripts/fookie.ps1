@@ -13,6 +13,9 @@
 param(
     [Parameter(Position=0)]
     [string]$Command = "help",
+    [Parameter(Position=1)]
+    [ValidateSet("full","minimal")]
+    [string]$Profile = "full",
 
     [string]$Release   = "fookie",
     [string]$Namespace = "default",
@@ -26,8 +29,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $Root         = (Get-Location).Path
-$ComposeDemo  = @("-f", "demo/docker-compose.yml", "-f", "demo/compose.demo.yml")
-$ComposeScale = @("-f", "demo/docker-compose.yml", "-f", "deploy/compose/scale.yml")
+$ComposeFull  = @("-f", "demo/docker-compose.yml", "-f", "demo/compose.demo.yml")
+$ComposeMin   = @("-f", "demo/docker-compose.minimal.yml", "-f", "demo/compose.demo.yml")
+$ComposeScaleFull = @("-f", "demo/docker-compose.yml", "-f", "deploy/compose/scale.yml")
+$ComposeScaleMin  = @("-f", "demo/docker-compose.minimal.yml", "-f", "deploy/compose/scale.yml")
 $HelmImage    = "alpine/helm:3"
 $HelmChart    = "charts/fookie"
 
@@ -55,20 +60,37 @@ function Invoke-Helm([string[]]$HelmArgs) {
     if ($LASTEXITCODE -ne 0) { throw "Helm command failed (exit $LASTEXITCODE)" }
 }
 
+function Resolve-ComposeArgs {
+    if ($Profile -eq "minimal") { return $ComposeMin }
+    return $ComposeFull
+}
+
+function Resolve-ScaleComposeArgs {
+    if ($Profile -eq "minimal") { return $ComposeScaleMin }
+    return $ComposeScaleFull
+}
+
 switch ($Command) {
 
     "help" {
         Write-Host @"
 Fookie PowerShell CLI
 ─────────────────────────────────────────────────
+Primary commands:
+  .\fookie.ps1 start [full|minimal]
+  .\fookie.ps1 stop [full|minimal]
+  .\fookie.ps1 status [full|minimal]
+  .\fookie.ps1 logs [full|minimal]
+
 All-in-one image (postgres+redis+server+worker):
   .\fookie.ps1 allinone-build     Build fookiejs/fookie image
   .\fookie.ps1 allinone-run       Run with demo/schema.fql on :8080
   .\fookie.ps1 allinone-run -Schema C:\path\to\schema.fql
 
 Docker (split server+worker):
-  .\fookie.ps1 docker-up          Build + start single server/worker
-  .\fookie.ps1 docker-down        Stop containers
+  .\fookie.ps1 docker-up          Build + start selected profile
+  .\fookie.ps1 docker-down        Stop selected profile
+  .\fookie.ps1 docker-status      Show selected profile status
   .\fookie.ps1 docker-clean       Stop + remove volumes
   .\fookie.ps1 docker-logs        Follow all logs
 
@@ -82,6 +104,12 @@ Infra only:
   .\fookie.ps1 redis-up           Start Redis
   .\fookie.ps1 infra-down         Stop postgres + redis
 
+Grafana hub (tüm cluster'ın bilgi merkezi):
+  .\fookie.ps1 observability-up    Observability stack başlat
+  .\fookie.ps1 observability-down  Stack'i durdur
+  .\fookie.ps1 hub                 Grafana'yı tarayıcıda aç
+  .\fookie.ps1 grafana-bootstrap   grafana_ro read-only PG user oluştur
+
 Helm (no local Helm — runs via Docker):
   .\fookie.ps1 helm-deps          Download chart dependencies
   .\fookie.ps1 helm-lint          Lint the chart
@@ -92,6 +120,7 @@ Helm (no local Helm — runs via Docker):
   .\fookie.ps1 helm-status        Show release status
 
 Options:
+  -Profile    full|minimal            (default: full)
   -Release    Helm release name       (default: fookie)
   -Namespace  Kubernetes namespace    (default: default)
   -KubeDir    kubeconfig directory    (default: ~\.kube)
@@ -121,20 +150,27 @@ Options:
 
     # ── Docker ──────────────────────────────────────────────────────────────
 
+    "start" { $Command = "docker-up" ; & $PSCommandPath $Command -Profile $Profile -Release $Release -Namespace $Namespace -KubeDir $KubeDir -Servers $Servers -Workers $Workers -Schema $Schema; return }
+    "stop" { $Command = "docker-down" ; & $PSCommandPath $Command -Profile $Profile -Release $Release -Namespace $Namespace -KubeDir $KubeDir -Servers $Servers -Workers $Workers -Schema $Schema; return }
+    "status" { $Command = "docker-status" ; & $PSCommandPath $Command -Profile $Profile -Release $Release -Namespace $Namespace -KubeDir $KubeDir -Servers $Servers -Workers $Workers -Schema $Schema; return }
+    "logs" { $Command = "docker-logs" ; & $PSCommandPath $Command -Profile $Profile -Release $Release -Namespace $Namespace -KubeDir $KubeDir -Servers $Servers -Workers $Workers -Schema $Schema; return }
+
     "docker-up" {
+        $compose = Resolve-ComposeArgs
         Write-Host "Building images..."
-        & docker compose @ComposeDemo build
+        & docker compose @compose build
         Write-Host "Starting stack..."
-        & docker compose @ComposeDemo up -d
+        & docker compose @compose up -d
         Start-Sleep 3
-        & docker compose @ComposeDemo ps
+        & docker compose @compose ps
     }
 
-    "docker-down" { & docker compose @ComposeDemo down }
-    "docker-clean" { & docker compose @ComposeDemo down -v }
-    "docker-logs"  { & docker compose @ComposeDemo logs -f }
-    "docker-logs-server" { & docker compose @ComposeDemo logs -f fookie-server }
-    "docker-logs-worker"  { & docker compose @ComposeDemo logs -f fookie-worker }
+    "docker-down" { $compose = Resolve-ComposeArgs; & docker compose @compose down }
+    "docker-status" { $compose = Resolve-ComposeArgs; & docker compose @compose ps }
+    "docker-clean" { $compose = Resolve-ComposeArgs; & docker compose @compose down -v }
+    "docker-logs"  { $compose = Resolve-ComposeArgs; & docker compose @compose logs -f }
+    "docker-logs-server" { $compose = Resolve-ComposeArgs; & docker compose @compose logs -f fookie-server }
+    "docker-logs-worker"  { $compose = Resolve-ComposeArgs; & docker compose @compose logs -f fookie-worker }
 
     # ── Infra ────────────────────────────────────────────────────────────────
 
@@ -151,17 +187,50 @@ Options:
     # ── Scale ────────────────────────────────────────────────────────────────
 
     "scale-up" {
+        $compose = Resolve-ComposeArgs
+        $composeScale = Resolve-ScaleComposeArgs
         Write-Host "Building images..."
-        & docker compose @ComposeDemo build
+        & docker compose @compose build
         Write-Host "Starting $Servers servers + $Workers workers..."
-        & docker compose @ComposeScale up -d `
+        & docker compose @composeScale up -d `
             --scale fookie-server=$Servers `
             --scale fookie-worker=$Workers
-        Write-Host ""; & docker compose @ComposeScale ps
+        Write-Host ""; & docker compose @composeScale ps
         Write-Host "TIP: .\fookie.ps1 docker-logs-worker"
     }
 
-    "scale-down" { & docker compose @ComposeScale down }
+    "scale-down" { $composeScale = Resolve-ScaleComposeArgs; & docker compose @composeScale down }
+
+    # ── Grafana Hub ──────────────────────────────────────────────────────────
+
+    "observability-up" {
+        Write-Host "Starting observability stack (Prometheus + Loki + Tempo + Grafana + exporters)..."
+        & docker compose -f deploy/compose/postgres.yml -f deploy/compose/observability.yml up -d
+        Start-Sleep 3
+        Write-Host ""
+        Write-Host "Grafana        -> http://localhost:3000   (anonymous admin)"
+        Write-Host "Prometheus     -> http://localhost:9090"
+        Write-Host "Loki           -> http://localhost:3100"
+        Write-Host "Tempo          -> http://localhost:3200"
+        Write-Host "cAdvisor       -> http://localhost:8088"
+        Write-Host ""
+        Write-Host "Bootstrap grafana_ro PG user:"
+        Write-Host "  .\fookie.ps1 grafana-bootstrap"
+    }
+
+    "observability-down" {
+        & docker compose -f deploy/compose/postgres.yml -f deploy/compose/observability.yml down
+    }
+
+    "hub" {
+        Start-Process "http://localhost:3000"
+    }
+
+    "grafana-bootstrap" {
+        Write-Host "Creating read-only grafana_ro PG user..."
+        Get-Content scripts/grafana-bootstrap.sql | & docker compose -f deploy/compose/postgres.yml exec -T postgres psql -U fookie -d fookie
+        Write-Host "Done. Grafana PostgreSQL datasource now works."
+    }
 
     # ── Helm ─────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,19 @@
+{
+  "name": "@fookie/worker-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Fookie workers",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.9.3"
+  }
+}

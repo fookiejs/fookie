@@ -1,0 +1,37 @@
+{{- if and .Values.observability.enabled .Values.observability.datasources }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fookie.fullname" . }}-grafana-datasources
+  labels:
+    {{- include "fookie.labels" . | nindent 4 }}
+    grafana_datasource: "1"
+data:
+  fookie-datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      {{- if .Values.observability.datasources.postgres.enabled }}
+      - name: FookieDB
+        type: postgres
+        uid: fookie-db
+        access: proxy
+        url: {{ .Values.observability.datasources.postgres.host | quote }}
+        database: {{ .Values.observability.datasources.postgres.database | quote }}
+        user: {{ .Values.observability.datasources.postgres.user | quote }}
+        jsonData:
+          sslmode: disable
+          postgresVersion: 1500
+        secureJsonData:
+          password: {{ .Values.observability.datasources.postgres.password | quote }}
+      {{- end }}
+      {{- if .Values.observability.datasources.graphql.enabled }}
+      - name: FookieGraphQL
+        type: yesoreyeram-infinity-datasource
+        uid: fookie-graphql
+        access: proxy
+        jsonData:
+          auth_method: none
+          allowedHosts:
+            - {{ tpl .Values.observability.datasources.graphql.url . | quote }}
+      {{- end }}
+{{- end }}

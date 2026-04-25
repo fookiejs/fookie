@@ -1,0 +1,8 @@
+server:
+  autoscaling:
+    enabled: true
+worker:
+  autoscaling:
+    enabled: true
+observability:
+  enabled: false

@@ -1,0 +1,76 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [
+    { "title": "Home", "type": "link", "url": "/d/fookie-home", "icon": "home" },
+    { "title": "Cluster", "type": "link", "url": "/d/fookie-cluster-ops", "icon": "cube" },
+    { "title": "Data Hub", "type": "link", "url": "/d/fookie-data-hub", "icon": "database" }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "text",
+      "title": "GraphQL Explorer — Kullanım",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "options": {
+        "mode": "markdown",
+        "content": "**Fookie GraphQL'e doğrudan Grafana'dan sorgu** — ayrı bir Playground'a gerek yok.\n\nAşağıdaki panel'ler `http://fookie-server:8080/graphql` endpoint'ine POST atar. Kendi query'lerinizi eklemek için paneli **Edit** > **Query** > `Body` alanını düzenleyin. `$query` template variable'ıyla üstten seçim yapılır."
+      }
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "fookie-graphql" },
+      "title": "GraphQL sonuç (seçili query)",
+      "type": "table",
+      "gridPos": { "h": 20, "w": 24, "x": 0, "y": 4 },
+      "id": 1,
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://fookie-server:8080/graphql",
+          "url_options": {
+            "method": "POST",
+            "headers": [{ "key": "Content-Type", "value": "application/json" }],
+            "body_type": "raw",
+            "body_content_type": "application/json",
+            "data": "{\"query\":\"$query\"}"
+          },
+          "root_selector": "data",
+          "columns": []
+        }
+      ]
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": ["fookie", "graphql"],
+  "templating": {
+    "list": [
+      {
+        "name": "query",
+        "type": "custom",
+        "label": "GraphQL query",
+        "query": "{ __schema { types { name kind } } },{ __schema { queryType { fields { name description } } } },{ __schema { mutationType { fields { name description } } } }",
+        "current": { "selected": true, "text": "{ __schema { queryType { fields { name description } } } }", "value": "{ __schema { queryType { fields { name description } } } }" },
+        "options": [
+          { "selected": false, "text": "Tüm tipler", "value": "{ __schema { types { name kind } } }" },
+          { "selected": true, "text": "Query field'ları", "value": "{ __schema { queryType { fields { name description } } } }" },
+          { "selected": false, "text": "Mutation field'ları", "value": "{ __schema { mutationType { fields { name description } } } }" }
+        ],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": { "from": "now-5m", "to": "now" },
+  "timezone": "browser",
+  "title": "Fookie — GraphQL Explorer",
+  "uid": "fookie-graphql",
+  "version": 1
+}

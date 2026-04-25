@@ -32,3 +32,36 @@ datasources:
         tags:
           - key: container
             value: container
+
+  # ── Fookie Data Hub ──────────────────────────────────────────────────────
+  # Read-only PostgreSQL connection: query business data directly from dashboards.
+  # The `grafana_ro` user is created by scripts/grafana-bootstrap.sql.
+  - name: FookieDB
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: fookie
+    user: grafana_ro
+    uid: fookie-db
+    isDefault: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1500
+      timescaledb: false
+    secureJsonData:
+      password: grafana_ro_dev
+
+  # GraphQL integration via Infinity plugin — eliminates the need for a
+  # separate GraphQL Playground. Pre-canned queries live in the
+  # graphql-explorer dashboard.
+  - name: FookieGraphQL
+    type: yesoreyeram-infinity-datasource
+    uid: fookie-graphql
+    access: proxy
+    isDefault: false
+    jsonData:
+      global_queries: []
+      auth_method: none
+      allowedHosts:
+        - http://fookie-server:8080
+        - http://localhost:8080

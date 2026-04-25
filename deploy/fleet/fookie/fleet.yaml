@@ -1,0 +1,33 @@
+defaultNamespace: fookie
+
+helm:
+  releaseName: fookie
+  chart: ../../../charts/fookie
+  valuesFiles:
+    - values-common.yaml
+
+targetCustomizations:
+  - name: dev
+    clusterSelector:
+      matchLabels:
+        env: dev
+    helm:
+      valuesFiles:
+        - values-common.yaml
+        - values-dev.yaml
+  - name: staging
+    clusterSelector:
+      matchLabels:
+        env: staging
+    helm:
+      valuesFiles:
+        - values-common.yaml
+        - values-staging.yaml
+  - name: prod
+    clusterSelector:
+      matchLabels:
+        env: prod
+    helm:
+      valuesFiles:
+        - values-common.yaml
+        - values-prod.yaml

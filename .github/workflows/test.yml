@@ -28,3 +28,44 @@ jobs:
           cache: true
       - name: Integration tests (Testcontainers)
         run: go test -count=1 -v -timeout 30m ./tests/integration/...
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Helm dependency update
+        run: helm dependency update charts/fookie
+      - name: Helm lint
+        run: helm lint charts/fookie
+      - name: Helm template
+        run: helm template fookie charts/fookie --namespace fookie --set observability.enabled=false >/tmp/fookie-rendered.yaml
+
+  rancher-smoke:
+    if: ${{ secrets.RANCHER_SMOKE_KUBECONFIG_B64 != '' }}
+    runs-on: ubuntu-latest
+    needs: [unit, integration, helm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Prepare kubeconfig
+        run: |
+          mkdir -p "${HOME}/.kube"
+          echo "${{ secrets.RANCHER_SMOKE_KUBECONFIG_B64 }}" | base64 -d > "${HOME}/.kube/config"
+          chmod 600 "${HOME}/.kube/config"
+      - name: Deploy smoke release
+        run: |
+          helm dependency update charts/fookie
+          helm upgrade --install fookie-smoke charts/fookie \
+            --namespace fookie-smoke \
+            --create-namespace \
+            --wait \
+            --timeout 10m \
+            --set observability.enabled=false \
+            --set redis.enabled=true \
+            --set server.replicas=1 \
+            --set worker.replicas=1
+      - name: Remove smoke release
+        if: always()
+        run: |
+          helm uninstall fookie-smoke --namespace fookie-smoke || true

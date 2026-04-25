@@ -24,7 +24,13 @@ spec:
           image: "{{ .Values.worker.image }}:{{ .Values.worker.tag }}"
           imagePullPolicy: {{ .Values.worker.pullPolicy }}
           command: ["/bin/sh", "-c", "exec /app/worker -db \"$DB_URL\""]
+          ports:
+            - name: metrics
+              containerPort: 9091
+              protocol: TCP
           env:
+            - name: METRICS_LISTEN
+              value: ":9091"
             - name: DB_URL
               valueFrom:
                 secretKeyRef:
@@ -40,6 +46,32 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- if .Values.worker.probes.startup.enabled }}
+          startupProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: {{ .Values.worker.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.worker.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.worker.probes.readiness.enabled }}
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: {{ .Values.worker.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.worker.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.worker.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.worker.probes.liveness.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: {{ .Values.worker.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.worker.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.worker.probes.liveness.failureThreshold }}
+          {{- end }}
           volumeMounts:
             - name: schema
               mountPath: {{ .Values.schema.mountPath }}

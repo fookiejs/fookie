@@ -10,3 +10,19 @@ dependencies:
     version: "20.11.4"
     repository: "oci://registry-1.docker.io/bitnamicharts"
     condition: redis.enabled
+
+  # kube-prometheus-stack brings Prometheus + Grafana + node-exporter +
+  # kube-state-metrics under a single dependency. Enable/disable via
+  # `observability.enabled` in values.yaml.
+  - name: kube-prometheus-stack
+    version: "58.2.1"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: observability.enabled
+    alias: observability
+
+  # Loki + Promtail for logs.
+  - name: loki-stack
+    version: "2.10.2"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: observability.logs.enabled
+    alias: logs

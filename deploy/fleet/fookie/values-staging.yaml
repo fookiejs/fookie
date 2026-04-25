@@ -1,0 +1,6 @@
+server:
+  replicas: 2
+worker:
+  replicas: 2
+observability:
+  enabled: true
