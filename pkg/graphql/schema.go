@@ -174,6 +174,66 @@ func BuildSchema(schema *ast.Schema, eventBus *events.Bus, roomBus *events.RoomB
 		}
 	}
 
+	// ── Connection types (keyset pagination) ──────────────────────────────
+	pageInfoType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "PageInfo",
+		Fields: graphql.Fields{
+			"hasNextPage": &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+			"hasPrevPage": &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+			"startCursor": &graphql.Field{Type: graphql.String},
+			"endCursor":   &graphql.Field{Type: graphql.String},
+			"totalCount":  &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		},
+	})
+
+	connectionInput := graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: "ConnectionInput",
+		Fields: graphql.InputObjectConfigFieldMap{
+			"first": &graphql.InputObjectFieldConfig{Type: graphql.Int, DefaultValue: 20},
+			"after": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		},
+	})
+
+	for _, model := range schema.Models {
+		if _, ok := model.CRUD["read"]; !ok {
+			continue
+		}
+		objType, ok := objectTypes[model.Name]
+		if !ok {
+			continue
+		}
+		wt := filterByModel[model.Name]
+		modelSnake := toSnake(model.Name)
+
+		// Capture loop variable for closures
+		capturedModel := model
+
+		edgeType := graphql.NewObject(graphql.ObjectConfig{
+			Name: model.Name + "Edge",
+			Fields: graphql.Fields{
+				"node":   &graphql.Field{Type: graphql.NewNonNull(objType)},
+				"cursor": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			},
+		})
+		connType := graphql.NewObject(graphql.ObjectConfig{
+			Name: model.Name + "Connection",
+			Fields: graphql.Fields{
+				"edges":      &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(edgeType)))},
+				"pageInfo":   &graphql.Field{Type: graphql.NewNonNull(pageInfoType)},
+				"totalCount": &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+			},
+		})
+
+		queryFields["list_"+modelSnake] = &graphql.Field{
+			Type: graphql.NewNonNull(connType),
+			Args: graphql.FieldConfigArgument{
+				"filter":     &graphql.ArgumentConfig{Type: wt},
+				"connection": &graphql.ArgumentConfig{Type: connectionInput},
+			},
+			Resolve: resolveListConnection(capturedModel.Name),
+		}
+	}
+
 	config := graphql.SchemaConfig{}
 	if len(queryFields) > 0 {
 		config.Query = graphql.NewObject(graphql.ObjectConfig{

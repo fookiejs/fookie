@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -494,6 +495,159 @@ func (e *Executor) Read(ctx context.Context, modelName string, req map[string]in
 		e.emit("read", modelName, "", map[string]interface{}{"count": len(result)})
 	}
 	return result, nil
+}
+
+// ConnectionResult is the return value of ReadConnection.
+type ConnectionResult struct {
+	Edges      []EdgeResult
+	PageInfo   PageInfoResult
+	TotalCount int
+}
+
+type EdgeResult struct {
+	Node   map[string]interface{}
+	Cursor string // base64-encoded keyset cursor
+}
+
+type PageInfoResult struct {
+	HasNextPage bool
+	HasPrevPage bool
+	StartCursor string
+	EndCursor   string
+	TotalCount  int
+}
+
+// ReadConnection performs keyset-cursor-based pagination on a model.
+// req["cursor"]["first"] (int) sets the page size (default 20, max 200).
+// req["cursor"]["after"] (string) is a base64-encoded opaque cursor.
+func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map[string]interface{}) (*ConnectionResult, error) {
+	op, model, err := e.resolveOp(modelName, "read")
+	if err != nil {
+		return nil, err
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "read", modelName)
+
+	if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+		return nil, fmt.Errorf("role: %w", err)
+	}
+	if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+		return nil, fmt.Errorf("rule: %w", err)
+	}
+
+	first := 20
+	var afterCursor *cursorKey
+	if c, ok := req["cursor"].(map[string]interface{}); ok {
+		if v := toInt(c["first"]); v > 0 {
+			first = v
+		}
+		if first > 200 {
+			first = 200
+		}
+		if s, ok := c["after"].(string); ok && s != "" {
+			afterCursor, _ = decodeCursor(s)
+		}
+	}
+
+	// Build WHERE clause from filter
+	frag := ""
+	filterArgs := []interface{}{}
+	argN := 1
+	if w, ok := req["filter"].(map[string]interface{}); ok && len(w) > 0 {
+		var wErr error
+		frag, filterArgs, argN, wErr = e.sqlGen.BuildWhereClause(model, w, argN)
+		if wErr != nil {
+			return nil, fmt.Errorf("filter: %w", wErr)
+		}
+	}
+
+	// Total count (ignoring cursor)
+	table := compiler.SnakeCase(model.Name)
+	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %q WHERE "deleted_at" IS NULL`, table)
+	if frag != "" {
+		countSQL += " AND (" + frag + ")"
+	}
+	var total int
+	e.execer(ctx).QueryRowContext(ctx, countSQL, filterArgs...).Scan(&total)
+
+	// Keyset condition
+	queryArgs := append([]interface{}{}, filterArgs...)
+	keyset := ""
+	if afterCursor != nil {
+		keyset = fmt.Sprintf(` AND ("created_at","id") > ($%d,$%d)`, argN, argN+1)
+		queryArgs = append(queryArgs, afterCursor.CreatedAt, afterCursor.ID)
+	}
+
+	// Fetch first+1 rows to determine hasNextPage
+	q := fmt.Sprintf(`SELECT * FROM %q WHERE "deleted_at" IS NULL`, table)
+	if frag != "" {
+		q += " AND (" + frag + ")"
+	}
+	q += keyset
+	q += ` ORDER BY "created_at" ASC, "id" ASC`
+	q += fmt.Sprintf(` LIMIT %d FOR SHARE`, first+1)
+
+	rows, err := e.execer(ctx).QueryContext(ctx, q, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+	rawRows, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	hasNext := len(rawRows) > first
+	if hasNext {
+		rawRows = rawRows[:first]
+	}
+
+	edges := make([]EdgeResult, len(rawRows))
+	for i, row := range rawRows {
+		maskRestrictedFields(row, model)
+		ck := cursorKey{}
+		if t, ok := row["created_at"]; ok {
+			ck.CreatedAt, _ = t.(time.Time)
+		}
+		if id, ok := row["id"].(string); ok {
+			ck.ID = id
+		}
+		edges[i] = EdgeResult{Node: row, Cursor: encodeCursor(ck)}
+	}
+
+	pi := PageInfoResult{
+		HasNextPage: hasNext,
+		TotalCount:  total,
+	}
+	if len(edges) > 0 {
+		pi.StartCursor = edges[0].Cursor
+		pi.EndCursor = edges[len(edges)-1].Cursor
+	}
+
+	return &ConnectionResult{Edges: edges, PageInfo: pi, TotalCount: total}, nil
+}
+
+// cursorKey encodes the keyset position: (created_at, id).
+type cursorKey struct {
+	CreatedAt time.Time `json:"ca"`
+	ID        string    `json:"id"`
+}
+
+func encodeCursor(ck cursorKey) string {
+	b, _ := json.Marshal(ck)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+func decodeCursor(s string) (*cursorKey, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	var ck cursorKey
+	if err := json.Unmarshal(b, &ck); err != nil {
+		return nil, err
+	}
+	return &ck, nil
 }
 
 func (e *Executor) UpdateMany(ctx context.Context, modelName string, req map[string]interface{}) (n int64, err error) {

@@ -162,6 +162,45 @@ func resolveRestore(modelName string) graphql.FieldResolveFn {
 	}
 }
 
+func resolveListConnection(modelName string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		req := map[string]interface{}{}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		if f, ok := p.Args["filter"]; ok && f != nil {
+			req["filter"] = f
+		}
+		// Map "connection" input to the internal "cursor" key
+		if c, ok := p.Args["connection"]; ok && c != nil {
+			req["cursor"] = c
+		}
+		conn, err := exec.ReadConnection(p.Context, modelName, req)
+		if err != nil {
+			return nil, err
+		}
+		// Marshal into plain map so graphql-go can resolve fields by name
+		edges := make([]interface{}, len(conn.Edges))
+		for i, e := range conn.Edges {
+			edges[i] = map[string]interface{}{
+				"node":   e.Node,
+				"cursor": e.Cursor,
+			}
+		}
+		return map[string]interface{}{
+			"edges": edges,
+			"pageInfo": map[string]interface{}{
+				"hasNextPage": conn.PageInfo.HasNextPage,
+				"hasPrevPage": conn.PageInfo.HasPrevPage,
+				"startCursor": conn.PageInfo.StartCursor,
+				"endCursor":   conn.PageInfo.EndCursor,
+				"totalCount":  conn.PageInfo.TotalCount,
+			},
+			"totalCount": conn.TotalCount,
+		}, nil
+	}
+}
+
 func resolveUpdateMany(modelName string) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
