@@ -113,6 +113,9 @@ func main() {
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
 
+	// Register demo external handlers so cron/outbox jobs resolve correctly.
+	registerDemoHandlers(executor)
+
 	// Redis — optional. If REDIS_URL set, use BLPOP instead of polling.
 	var processor *runtime.OutboxProcessor
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {

@@ -105,6 +105,10 @@ func main() {
 	loggerWrapper := runtime.NewLoggerWrapper(logger)
 	executor := runtime.NewExecutor(db, schema, loggerWrapper)
 
+	// Register demo external handlers (GrowUserbase, RunTransferBatch, RunAtmActivity).
+	// These are no-ops if the schema doesn't use them.
+	registerDemoHandlers(executor)
+
 	// Redis — optional; enables multi-server pub/sub notify + instant outbox
 	var rdb *redis.Client
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {

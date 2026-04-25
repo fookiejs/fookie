@@ -63,7 +63,7 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 	return e
 }
 
-func (e *Executor) SetLogSink(s LogSink)         { e.logSink = s }
+func (e *Executor) SetLogSink(s LogSink)               { e.logSink = s }
 func (e *Executor) SetOutboxNotify(fn func(id string)) { e.outboxNotify = fn }
 func (e *Executor) notifyOutbox(id string) {
 	if e.outboxNotify != nil {
@@ -473,7 +473,6 @@ func (e *Executor) Read(ctx context.Context, modelName string, req map[string]in
 	}
 
 	sqlStr := e.sqlGen.CompileReadWithFilter(model, op, frag, limit, offset)
-	e.logger.Info("read query", "sql", sqlStr)
 
 	dbCtx, dbSpan := telemetry.Tracer().Start(ctx, "fookie.db.select")
 	dbSpan.SetAttributes(
@@ -1268,6 +1267,20 @@ func (e *Executor) evalExpr(ctx context.Context, expr ast.Expression, rc *runCtx
 			e.emitLog(ctx, rc, "info", msg, fields, ex.LineNo, "fsl")
 			return true, nil
 		}
+		if ex.Name == "config" {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("config requires 1 argument (key)")
+			}
+			key, ok := args[0].(string)
+			if !ok || key == "" {
+				return nil, fmt.Errorf("config key must be a non-empty string")
+			}
+			val, ok := e.configValue(key)
+			if !ok {
+				return nil, fmt.Errorf("unknown config key %q", key)
+			}
+			return val, nil
+		}
 		fn, ok := validator.GetBuiltin(ex.Name)
 		if !ok {
 			return nil, fmt.Errorf("unknown builtin validator: %s", ex.Name)
@@ -1286,6 +1299,19 @@ func (e *Executor) evalExpr(ctx context.Context, expr ast.Expression, rc *runCtx
 		return out, nil
 	}
 	return nil, fmt.Errorf("unsupported expression: %T", expr)
+}
+
+func (e *Executor) configValue(key string) (interface{}, bool) {
+	if e == nil || e.schema == nil {
+		return nil, false
+	}
+	for i := len(e.schema.Configs) - 1; i >= 0; i-- {
+		c := e.schema.Configs[i]
+		if c != nil && c.Key == key {
+			return c.Value, true
+		}
+	}
+	return nil, false
 }
 
 func iterableToSlice(v interface{}) ([]interface{}, error) {

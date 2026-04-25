@@ -17,7 +17,10 @@ const instrumentationName = "fookie"
 func InitTracer(ctx context.Context, serviceName string) (func(context.Context) error, error) {
 	endpoint := os.Getenv("OTLP_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "localhost:4318"
+		// No OTLP endpoint configured — install a noop provider so spans are
+		// created (zero overhead) but nothing is exported.
+		otel.SetTracerProvider(trace.NewNoopTracerProvider())
+		return func(context.Context) error { return nil }, nil
 	}
 
 	exporter, err := otlptracehttp.New(ctx,
