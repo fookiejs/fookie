@@ -117,6 +117,16 @@ func BuildSchema(schema *ast.Schema, eventBus *events.Bus, roomBus *events.RoomB
 				},
 				Resolve: resolveDeleteMany(model.Name),
 			}
+			// restore_<model> automatically available for every soft-deletable model.
+			mutationFields["restore_"+modelSnake] = &graphql.Field{
+				Type: graphql.NewNonNull(graphql.Boolean),
+				Args: graphql.FieldConfigArgument{
+					"id": &graphql.ArgumentConfig{
+						Type: graphql.NewNonNull(graphql.ID),
+					},
+				},
+				Resolve: resolveRestore(model.Name),
+			}
 		}
 
 		// Aggregate operations: sum, count, avg, min, max

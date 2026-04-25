@@ -902,6 +902,56 @@ func (e *Executor) Delete(ctx context.Context, modelName string, id string, req 
 	return nil
 }
 
+// Restore un-deletes a soft-deleted record by clearing deleted_at.
+// It reuses the delete operation's role/rule checks so the same permissions apply.
+func (e *Executor) Restore(ctx context.Context, modelName string, id string, req map[string]interface{}) (err error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.restore "+modelName)
+	defer span.End()
+
+	op, model, err := e.resolveOp(modelName, "delete")
+	if err != nil {
+		// Fallback: try update op if no delete op defined
+		_, model, err = e.resolveOp(modelName, "update")
+		if err != nil {
+			return fmt.Errorf("restore: no delete or update op on model %s", modelName)
+		}
+		op = nil
+	}
+
+	rc, ctx := e.rootRC(ctx, req, "restore", modelName)
+
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	ctx = withTx(ctx, tx)
+
+	if op != nil {
+		if err := e.execBlock(ctx, "role", op.Role, rc); err != nil {
+			return fmt.Errorf("role: %w", err)
+		}
+		if err := e.execBlock(ctx, "rule", op.Rule, rc); err != nil {
+			return fmt.Errorf("rule: %w", err)
+		}
+	}
+
+	table := compiler.SnakeCase(model.Name)
+	if _, err := e.execer(ctx).ExecContext(ctx,
+		fmt.Sprintf(`UPDATE %q SET "deleted_at" = NULL, "updated_at" = NOW() WHERE "id" = $1`, table),
+		id,
+	); err != nil {
+		return fmt.Errorf("restore: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	e.emit("restored", modelName, id, map[string]interface{}{"id": id})
+	return nil
+}
+
 func (e *Executor) execBlock(ctx context.Context, blockName string, block *ast.Block, rc *runCtx) error {
 	if block == nil {
 		return nil

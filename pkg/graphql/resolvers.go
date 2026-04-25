@@ -147,6 +147,21 @@ func resolveDelete(modelName string) graphql.FieldResolveFn {
 	}
 }
 
+func resolveRestore(modelName string) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		exec := executorFromCtx(p.Context)
+		id := p.Args["id"].(string)
+		req := map[string]interface{}{}
+		injectTokenCtx(p.Context, req)
+		injectAdminKey(p.Context, req)
+		err := exec.Restore(p.Context, modelName, id, req)
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+}
+
 func resolveUpdateMany(modelName string) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
