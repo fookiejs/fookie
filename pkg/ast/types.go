@@ -265,6 +265,14 @@ type External struct {
 	Name   string
 	Body   map[string]string
 	Output map[string]string
+
+	// Retry policy — configurable from FQL.
+	// RetryMax: max attempts before marking failed (0 → default 3).
+	// RetryBackoff: "none" | "linear" | "exponential" (default "exponential").
+	// RetryMaxDelay: cap for backoff in seconds (0 → no cap).
+	RetryMax      int
+	RetryBackoff  string
+	RetryMaxDelay int
 }
 
 type Module struct {

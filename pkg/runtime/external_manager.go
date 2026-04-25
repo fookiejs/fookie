@@ -397,7 +397,6 @@ func (op *OutboxProcessor) runAfterScheduler(ctx context.Context) {
 			FROM outbox
 			WHERE status = 'pending'
 			  AND is_compensation = FALSE
-			  AND retry_count < 3
 			  AND run_after > NOW()
 		`).Scan(&t)
 		if err != nil || t.IsZero() {
@@ -441,6 +440,60 @@ func (op *OutboxProcessor) Stop() {
 	close(op.done)
 }
 
+// findExternal looks up an External definition from the schema by name.
+// Returns nil if not found (e.g. cron jobs have no External definition).
+func (op *OutboxProcessor) findExternal(name string) *ast.External {
+	for _, ext := range op.exec.schema.Externals {
+		if ext.Name == name {
+			return ext
+		}
+	}
+	return nil
+}
+
+// retryMaxFor returns the configured max retry attempts for an external (default 3).
+func retryMaxFor(ext *ast.External) int {
+	if ext == nil || ext.RetryMax <= 0 {
+		return 3
+	}
+	return ext.RetryMax
+}
+
+// retryBackoffDelay computes how long to wait before the next retry attempt.
+// attempt is the retry_count AFTER incrementing (1 = first retry).
+func retryBackoffDelay(ext *ast.External, attempt int) time.Duration {
+	if ext == nil {
+		return exponentialBackoff(attempt, 0)
+	}
+	switch ext.RetryBackoff {
+	case "none":
+		return 0
+	case "linear":
+		d := time.Duration(attempt) * 10 * time.Second
+		if ext.RetryMaxDelay > 0 {
+			max := time.Duration(ext.RetryMaxDelay) * time.Second
+			if d > max {
+				d = max
+			}
+		}
+		return d
+	default: // "exponential" or unset
+		return exponentialBackoff(attempt, ext.RetryMaxDelay)
+	}
+}
+
+func exponentialBackoff(attempt int, maxDelaySecs int) time.Duration {
+	// 10s * 2^(attempt-1): attempt=1→10s, attempt=2→20s, attempt=3→40s …
+	d := time.Duration(10<<uint(attempt-1)) * time.Second
+	if maxDelaySecs > 0 {
+		max := time.Duration(maxDelaySecs) * time.Second
+		if d > max {
+			d = max
+		}
+	}
+	return d
+}
+
 func (op *OutboxProcessor) processPending() {
 	if op.db == nil {
 		return
@@ -466,7 +519,6 @@ func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
 		FROM outbox
 		WHERE status = 'pending'
 		  AND is_compensation = FALSE
-		  AND retry_count < 3
 		  AND (run_after IS NULL OR run_after <= NOW())
 		ORDER BY COALESCE(run_after, created_at) ASC
 		LIMIT 1
@@ -545,8 +597,10 @@ func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
 			op.checkSagaCompletion(ctx, job.sagaID.String, job.entityType, job.entityID.String)
 		}
 	} else {
+		ext := op.findExternal(job.externalName)
+		maxRetry := retryMaxFor(ext)
 		newRetryCount := job.retryCount + 1
-		if newRetryCount >= 3 {
+		if newRetryCount >= maxRetry {
 			tx.ExecContext(ctx, `UPDATE outbox SET status='failed', error_message=$1, retry_count=$2 WHERE id=$3`, callErr.Error(), newRetryCount, job.id)
 			tx.Commit()
 			if job.sagaID.Valid {
@@ -557,7 +611,16 @@ func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
 				}
 			}
 		} else {
-			tx.ExecContext(ctx, `UPDATE outbox SET retry_count=$1, error_message=$2 WHERE id=$3`, newRetryCount, callErr.Error(), job.id)
+			// Compute backoff delay for next attempt.
+			delay := retryBackoffDelay(ext, newRetryCount)
+			if delay > 0 {
+				nextRun := time.Now().Add(delay)
+				tx.ExecContext(ctx, `UPDATE outbox SET retry_count=$1, error_message=$2, run_after=$3 WHERE id=$4`,
+					newRetryCount, callErr.Error(), nextRun, job.id)
+			} else {
+				tx.ExecContext(ctx, `UPDATE outbox SET retry_count=$1, error_message=$2 WHERE id=$3`,
+					newRetryCount, callErr.Error(), job.id)
+			}
 			tx.Commit()
 		}
 	}

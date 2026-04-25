@@ -1151,6 +1151,38 @@ func (p *Parser) parseExternal() (*ast.External, error) {
 			for _, f := range fields {
 				ext.Output[f.Name] = string(f.Type)
 			}
+		case TOKEN_IDENTIFIER:
+			// Retry-policy options: retry, retry_backoff, retry_max_delay
+			key := p.cur().Value
+			p.eat()
+			if _, err := p.expect(TOKEN_COLON); err != nil {
+				return nil, err
+			}
+			val := p.cur().Value
+			p.eat()
+			switch key {
+			case "retry":
+				n, err := strconv.Atoi(val)
+				if err != nil {
+					return nil, p.errorf("retry value must be an integer, got %q", val)
+				}
+				ext.RetryMax = n
+			case "retry_backoff":
+				switch val {
+				case "none", "linear", "exponential":
+					ext.RetryBackoff = val
+				default:
+					return nil, p.errorf("retry_backoff must be none|linear|exponential, got %q", val)
+				}
+			case "retry_max_delay":
+				n, err := strconv.Atoi(val)
+				if err != nil {
+					return nil, p.errorf("retry_max_delay value must be an integer (seconds), got %q", val)
+				}
+				ext.RetryMaxDelay = n
+			default:
+				return nil, p.errorf("unknown external option %q in %q", key, ext.Name)
+			}
 		default:
 			return nil, p.errorf("unexpected token in external %q: %q", ext.Name, p.cur().Value)
 		}
