@@ -17,3 +17,9 @@ bin/
 .idea/
 .vscode/
 .claude/
+
+# JavaScript/Node
+node_modules/
+packages/*/dist/
+packages/*/.eslintcache
+.npm
