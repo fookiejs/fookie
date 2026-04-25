@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"os"
+	"strconv"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -38,9 +39,19 @@ func InitTracer(ctx context.Context, serviceName string) (func(context.Context) 
 		return nil, err
 	}
 
+	// Trace sampling: TRACE_SAMPLE_RATE env var (0.0-1.0, default 0.1 for production)
+	sampleRate := 0.1
+	if rate := os.Getenv("TRACE_SAMPLE_RATE"); rate != "" {
+		if parsed, err := strconv.ParseFloat(rate, 64); err == nil && parsed >= 0 && parsed <= 1 {
+			sampleRate = parsed
+		}
+	}
+	sampler := sdktrace.TraceIDRatioBased(sampleRate)
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
 	)
 	otel.SetTracerProvider(tp)
 
