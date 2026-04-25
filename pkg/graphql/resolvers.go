@@ -6,6 +6,9 @@ import (
 	"github.com/fookiejs/fookie/pkg/compiler"
 	"github.com/fookiejs/fookie/pkg/runtime"
 	"github.com/graphql-go/graphql"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type contextKey string
@@ -71,8 +74,30 @@ func stripClientSystemFromBody(body map[string]interface{}) {
 	delete(body, "__system")
 }
 
-func resolveCreate(modelName string) graphql.FieldResolveFn {
+// instrumentResolver wraps a GraphQL resolver with OpenTelemetry tracing.
+func instrumentResolver(operation, modelName string, fn graphql.FieldResolveFn) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
+		tracer := otel.Tracer("fookie/graphql")
+		ctx, span := tracer.Start(p.Context, "graphql.resolver",
+			trace.WithAttributes(
+				attribute.String("graphql.operation", operation),
+				attribute.String("graphql.model", modelName),
+			),
+		)
+		defer span.End()
+
+		// Update the ResolveParams context with the traced context
+		p.Context = ctx
+		result, err := fn(p)
+		if err != nil {
+			span.RecordError(err)
+		}
+		return result, err
+	}
+}
+
+func resolveCreate(modelName string) graphql.FieldResolveFn {
+	return instrumentResolver("create", modelName, func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
 		body := p.Args["body"].(map[string]interface{})
 		stripClientSystemFromBody(body)
@@ -80,11 +105,11 @@ func resolveCreate(modelName string) graphql.FieldResolveFn {
 		injectTokenCtx(p.Context, req)
 		injectAdminKey(p.Context, req)
 		return exec.Create(p.Context, modelName, req)
-	}
+	})
 }
 
 func resolveRead(modelName string) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
+	return instrumentResolver("read", modelName, func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
 		req := map[string]interface{}{}
 		if w, ok := p.Args["filter"]; ok && w != nil {
@@ -96,7 +121,7 @@ func resolveRead(modelName string) graphql.FieldResolveFn {
 		injectTokenCtx(p.Context, req)
 		injectAdminKey(p.Context, req)
 		return exec.Read(p.Context, modelName, req)
-	}
+	})
 }
 
 func resolveAggregateRead(modelName string) graphql.FieldResolveFn {
@@ -120,7 +145,7 @@ func resolveAggregateRead(modelName string) graphql.FieldResolveFn {
 }
 
 func resolveUpdate(modelName string) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
+	return instrumentResolver("update", modelName, func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
 		id := p.Args["id"].(string)
 		body := p.Args["body"].(map[string]interface{})
@@ -129,11 +154,11 @@ func resolveUpdate(modelName string) graphql.FieldResolveFn {
 		injectTokenCtx(p.Context, req)
 		injectAdminKey(p.Context, req)
 		return exec.Update(p.Context, modelName, id, req)
-	}
+	})
 }
 
 func resolveDelete(modelName string) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
+	return instrumentResolver("delete", modelName, func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
 		id := p.Args["id"].(string)
 		req := map[string]interface{}{}
@@ -144,7 +169,7 @@ func resolveDelete(modelName string) graphql.FieldResolveFn {
 			return false, err
 		}
 		return true, nil
-	}
+	})
 }
 
 func resolveRestore(modelName string) graphql.FieldResolveFn {
@@ -163,7 +188,7 @@ func resolveRestore(modelName string) graphql.FieldResolveFn {
 }
 
 func resolveListConnection(modelName string) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
+	return instrumentResolver("list_connection", modelName, func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
 		req := map[string]interface{}{}
 		injectTokenCtx(p.Context, req)
@@ -198,7 +223,7 @@ func resolveListConnection(modelName string) graphql.FieldResolveFn {
 			},
 			"totalCount": conn.TotalCount,
 		}, nil
-	}
+	})
 }
 
 func resolveUpdateMany(modelName string) graphql.FieldResolveFn {
@@ -307,7 +332,7 @@ func resolveSum(modelName, field string) graphql.FieldResolveFn {
 }
 
 func resolveCount(modelName string) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
+	return instrumentResolver("count", modelName, func(p graphql.ResolveParams) (interface{}, error) {
 		exec := executorFromCtx(p.Context)
 		req := map[string]interface{}{}
 		if userFilter, ok := p.Args["filter"].(map[string]interface{}); ok && len(userFilter) > 0 {
@@ -316,7 +341,7 @@ func resolveCount(modelName string) graphql.FieldResolveFn {
 		injectTokenCtx(p.Context, req)
 		injectAdminKey(p.Context, req)
 		return exec.Count(p.Context, modelName, req)
-	}
+	})
 }
 
 func resolveAvg(modelName, field string) graphql.FieldResolveFn {
