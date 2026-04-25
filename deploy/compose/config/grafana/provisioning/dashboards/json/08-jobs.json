@@ -1,0 +1,204 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Home",    "type": "link", "url": "/d/fookie-home",       "icon": "home" },
+    { "title": "Cluster", "type": "link", "url": "/d/fookie-cluster-ops","icon": "cube" },
+    { "title": "DB",      "type": "link", "url": "/d/fookie-db-health",  "icon": "database" }
+  ],
+  "liveNow": true,
+  "panels": [
+
+    { "type": "row", "title": "Genel Bakış", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 50, "collapsed": false },
+
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Pending", "type": "stat", "id": 1,
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }, { "color": "orange", "value": 50 }, { "color": "red", "value": 500 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "value" },
+      "targets": [{ "format": "table", "rawSql": "SELECT count(*) AS value FROM outbox WHERE status='pending'", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Processing", "type": "stat", "id": 2,
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [{ "format": "table", "rawSql": "SELECT count(*) AS value FROM outbox WHERE status='processing'", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Processed (son 1 saat)", "type": "stat", "id": 3,
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [{ "format": "table", "rawSql": "SELECT count(*) AS value FROM outbox WHERE status='processed' AND processed_at > NOW() - INTERVAL '1 hour'", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Retrying (retry_count > 0)", "type": "stat", "id": 4,
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 10 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "value" },
+      "targets": [{ "format": "table", "rawSql": "SELECT count(*) AS value FROM outbox WHERE status='pending' AND retry_count > 0", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Failed (dead-letter)", "type": "stat", "id": 5,
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "value" },
+      "targets": [{ "format": "table", "rawSql": "SELECT count(*) AS value FROM outbox WHERE status='failed'", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Scheduled (run_after > now)", "type": "stat", "id": 6,
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [{ "format": "table", "rawSql": "SELECT count(*) AS value FROM outbox WHERE status='pending' AND run_after > NOW()", "refId": "A" }]
+    },
+
+    { "type": "row", "title": "Throughput", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "id": 51, "collapsed": false },
+
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "İşlenen iş / dakika",
+      "type": "timeseries", "id": 10,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 }, "unit": "short" } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [{
+        "format": "time_series",
+        "rawSql": "SELECT date_trunc('minute', processed_at) AS time, count(*) AS \"processed\" FROM outbox WHERE status='processed' AND processed_at > NOW() - INTERVAL '1 hour' GROUP BY 1 ORDER BY 1",
+        "refId": "A"
+      }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "External name bazında iş sayısı",
+      "type": "bargauge", "id": 11,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": { "defaults": { "color": { "mode": "continuous-BlPu" }, "unit": "short" } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT external_name AS metric, count(*) AS value FROM outbox GROUP BY external_name ORDER BY value DESC LIMIT 20",
+        "refId": "A"
+      }]
+    },
+
+    { "type": "row", "title": "Pending İşler", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "id": 52, "collapsed": false },
+
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Pending — bekleyen işler",
+      "type": "table", "id": 20,
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 15 },
+      "options": { "showHeader": true, "sortBy": [{ "desc": false, "displayName": "created_at" }] },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "retry_count" }, "properties": [{ "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 3 }] } }, { "id": "custom.displayMode", "value": "color-background" }] },
+          { "matcher": { "id": "byName", "options": "run_after" }, "properties": [{ "id": "unit", "value": "dateTimeAsIso" }] }
+        ]
+      },
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT id, external_name, entity_type, entity_id, status, retry_count, run_after, created_at FROM outbox WHERE status='pending' ORDER BY COALESCE(run_after, created_at) ASC LIMIT 100",
+        "refId": "A"
+      }]
+    },
+
+    { "type": "row", "title": "Dead-Letter Queue — Başarısız İşler", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }, "id": 53, "collapsed": false },
+
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Failed işler (son hata mesajıyla)",
+      "type": "table", "id": 30,
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
+      "options": { "showHeader": true, "sortBy": [{ "desc": true, "displayName": "created_at" }] },
+      "fieldConfig": {
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "error_message" }, "properties": [{ "id": "custom.width", "value": 400 }] },
+          { "matcher": { "id": "byName", "options": "retry_count" }, "properties": [{ "id": "custom.displayMode", "value": "color-background" }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] } }] }
+        ]
+      },
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT id, external_name, entity_type, entity_id, retry_count, error_message, created_at FROM outbox WHERE status='failed' ORDER BY created_at DESC LIMIT 200",
+        "refId": "A"
+      }]
+    },
+
+    { "type": "row", "title": "Retry Geçmişi", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }, "id": 54, "collapsed": false },
+
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Retry dağılımı (retry_count'a göre)",
+      "type": "bargauge", "id": 40,
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "color": { "mode": "continuous-RdYlGr" }, "unit": "short" } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT retry_count::text AS metric, count(*) AS value FROM outbox WHERE retry_count > 0 GROUP BY retry_count ORDER BY retry_count",
+        "refId": "A"
+      }]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "External name bazında başarısızlık oranı",
+      "type": "table", "id": 41,
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 37 },
+      "options": { "showHeader": true, "sortBy": [{ "desc": true, "displayName": "fail_rate" }] },
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT external_name, count(*) FILTER (WHERE status='failed') AS failed, count(*) AS total, round(100.0 * count(*) FILTER (WHERE status='failed') / count(*), 1) AS fail_rate FROM outbox GROUP BY external_name ORDER BY fail_rate DESC",
+        "refId": "A"
+      }]
+    },
+
+    { "type": "row", "title": "Saga Durumu", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 }, "id": 55, "collapsed": false },
+
+    {
+      "datasource": { "type": "postgres", "uid": "fookie-db" },
+      "title": "Aktif saga'lar (adım bazında)",
+      "type": "table", "id": 45,
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 44 },
+      "options": { "showHeader": true, "sortBy": [{ "desc": false, "displayName": "saga_step" }] },
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT saga_id, entity_type, entity_id, max(saga_step) AS current_step, bool_or(is_compensation) AS compensating, max(status) AS status, min(created_at) AS started_at FROM outbox WHERE saga_id IS NOT NULL GROUP BY saga_id, entity_type, entity_id ORDER BY started_at DESC LIMIT 50",
+        "refId": "A"
+      }]
+    }
+
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["fookie", "jobs", "outbox", "dlq"],
+  "templating": {
+    "list": [
+      {
+        "name": "external_name",
+        "type": "query",
+        "label": "External",
+        "datasource": { "type": "postgres", "uid": "fookie-db" },
+        "query": "SELECT DISTINCT external_name FROM outbox ORDER BY 1",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": false,
+        "refresh": 2
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "title": "Fookie — Background Jobs",
+  "uid": "fookie-jobs",
+  "version": 1
+}
