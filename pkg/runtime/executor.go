@@ -52,6 +52,14 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 		roomNameCache: make(map[string]string),
 	}
 	extMgr.store = &StoreAdapter{e: e}
+
+	// Auto-register HTTP worker URLs declared in the schema.
+	for _, ext := range schema.Externals {
+		if ext.URL != "" {
+			extMgr.RegisterURL(ext.Name, ext.URL)
+		}
+	}
+
 	return e
 }
 

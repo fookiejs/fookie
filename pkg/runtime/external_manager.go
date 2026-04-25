@@ -1,11 +1,13 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +30,7 @@ type ExternalHandler func(ctx context.Context, input map[string]interface{}, sto
 
 type ExternalManager struct {
 	handlers map[string]ExternalHandler
+	urlMap   map[string]string // external name → base URL (for HTTP worker dispatch)
 	mu       sync.RWMutex
 	cache    map[string]*CachedResult
 	store    Store
@@ -43,6 +46,7 @@ type CachedResult struct {
 func NewExternalManager() *ExternalManager {
 	return &ExternalManager{
 		handlers: make(map[string]ExternalHandler),
+		urlMap:   make(map[string]string),
 		cache:    make(map[string]*CachedResult),
 	}
 }
@@ -53,14 +57,29 @@ func (em *ExternalManager) Register(name string, handler ExternalHandler) {
 	em.handlers[name] = handler
 }
 
+// RegisterURL registers an external whose handler is served by an HTTP worker
+// (e.g. a Node.js @fookie/worker process). Calls are dispatched via
+// POST {baseURL}/call/{name}.
+func (em *ExternalManager) RegisterURL(name, baseURL string) {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	em.urlMap[name] = baseURL
+}
+
 func (em *ExternalManager) SetRoomBus(b *events.RoomBus) {
 	em.roomBus = b
 }
 
 func (em *ExternalManager) Call(ctx context.Context, name string, input map[string]interface{}) (map[string]interface{}, error) {
 	em.mu.RLock()
+	baseURL, hasURL := em.urlMap[name]
 	handler, exists := em.handlers[name]
 	em.mu.RUnlock()
+
+	// HTTP worker dispatch takes priority over Go handler registry.
+	if hasURL {
+		return em.callHTTPWorker(ctx, name, baseURL, input)
+	}
 
 	if !exists {
 		return em.handleBuiltin(ctx, name, input)
@@ -85,6 +104,50 @@ func (em *ExternalManager) Call(ctx context.Context, name string, input map[stri
 	}
 
 	return result, nil
+}
+
+// callHTTPWorker dispatches a call to an external HTTP worker process.
+//
+// Protocol (both request and response are JSON):
+//
+//	POST {baseURL}/call/{name}
+//	Request body:  {"input": {…}}
+//	Success body:  {"result": {…}}
+//	Error body:    {"error": "…"}
+func (em *ExternalManager) callHTTPWorker(ctx context.Context, name, baseURL string, input map[string]interface{}) (map[string]interface{}, error) {
+	reqBody, err := json.Marshal(map[string]interface{}{"input": input})
+	if err != nil {
+		return nil, fmt.Errorf("http worker marshal: %w", err)
+	}
+
+	url := strings.TrimRight(baseURL, "/") + "/call/" + name
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("http worker request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Fookie-External", name)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http worker %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	var payload struct {
+		Result map[string]interface{} `json:"result"`
+		Error  string                 `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("http worker %s decode: %w", name, err)
+	}
+	if payload.Error != "" {
+		return nil, fmt.Errorf("http worker %s: %s", name, payload.Error)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http worker %s: HTTP %d", name, resp.StatusCode)
+	}
+	return payload.Result, nil
 }
 
 func (em *ExternalManager) callWithRetry(ctx context.Context, handler ExternalHandler, input map[string]interface{}) (map[string]interface{}, error) {

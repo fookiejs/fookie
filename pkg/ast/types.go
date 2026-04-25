@@ -281,6 +281,11 @@ type External struct {
 	RetryMax      int
 	RetryBackoff  string
 	RetryMaxDelay int
+
+	// URL: when set, calls are dispatched via HTTP to an external worker process
+	// (e.g. a Node.js @fookie/worker server) instead of a registered Go handler.
+	// Format: "http://host:port" — the runtime POST's to {URL}/call/{name}.
+	URL string
 }
 
 type Module struct {

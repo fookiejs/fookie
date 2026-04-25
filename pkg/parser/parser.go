@@ -1257,6 +1257,8 @@ func (p *Parser) parseExternal() (*ast.External, error) {
 					return nil, p.errorf("retry_max_delay value must be an integer (seconds), got %q", val)
 				}
 				ext.RetryMaxDelay = n
+			case "url":
+				ext.URL = val
 			default:
 				return nil, p.errorf("unknown external option %q in %q", key, ext.Name)
 			}
