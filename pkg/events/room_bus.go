@@ -7,6 +7,9 @@ import (
 	"sync"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type RoomBus struct {
@@ -94,9 +97,28 @@ func (rb *RoomBus) Publish(roomID string, msg map[string]interface{}) {
 	rb.publishLocal(roomID, msg)
 
 	if rb.rdb != nil {
+		ctx := context.Background()
+		// Instrument Redis Publish operation
+		tracer := otel.Tracer("fookie/events")
+		_, span := tracer.Start(ctx, "room_bus.redis_publish",
+			trace.WithAttributes(
+				attribute.String("redis.command", "PUBLISH"),
+				attribute.String("redis.key", "fookie:room:"+roomID),
+				attribute.String("room_id", roomID),
+			),
+		)
+		defer span.End()
+
 		payload, err := json.Marshal(msg)
-		if err == nil {
-			rb.rdb.Publish(context.Background(), "fookie:room:"+roomID, payload)
+		if err != nil {
+			span.RecordError(err)
+			return
+		}
+		result := rb.rdb.Publish(ctx, "fookie:room:"+roomID, payload)
+		if err := result.Err(); err != nil {
+			span.RecordError(err)
+		} else {
+			span.SetAttributes(attribute.Int64("redis.subscribers", result.Val()))
 		}
 	}
 }
@@ -107,6 +129,17 @@ func (rb *RoomBus) StartRedisSubscriber(ctx context.Context) {
 	if rb.rdb == nil {
 		return
 	}
+
+	// Instrument PSubscribe call
+	tracer := otel.Tracer("fookie/events")
+	_, subscribeSpan := tracer.Start(ctx, "room_bus.redis_psubscribe",
+		trace.WithAttributes(
+			attribute.String("redis.command", "PSUBSCRIBE"),
+			attribute.String("redis.pattern", "fookie:room:*"),
+		),
+	)
+	defer subscribeSpan.End()
+
 	pubsub := rb.rdb.PSubscribe(ctx, "fookie:room:*")
 	defer pubsub.Close()
 
@@ -119,10 +152,22 @@ func (rb *RoomBus) StartRedisSubscriber(ctx context.Context) {
 				return
 			}
 			roomID := strings.TrimPrefix(redisMsg.Channel, "fookie:room:")
+
+			// Record message receive as span event
+			_, msgSpan := tracer.Start(ctx, "room_bus.redis_message",
+				trace.WithAttributes(
+					attribute.String("redis.channel", redisMsg.Channel),
+					attribute.String("room_id", roomID),
+				),
+			)
+
 			var msg map[string]interface{}
-			if err := json.Unmarshal([]byte(redisMsg.Payload), &msg); err == nil {
+			if err := json.Unmarshal([]byte(redisMsg.Payload), &msg); err != nil {
+				msgSpan.RecordError(err)
+			} else {
 				rb.publishLocal(roomID, msg)
 			}
+			msgSpan.End()
 		}
 	}
 }
