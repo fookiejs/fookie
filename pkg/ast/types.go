@@ -31,11 +31,19 @@ type CronEntry struct {
 	Body     *Block
 }
 
+type IndexDef struct {
+	Unique  bool     // true = UNIQUE INDEX
+	Columns []string // column names in order (e.g. ["email"], ["tenant_id","email"])
+	Desc    []bool   // parallel to Columns: true = DESC
+	Where   string   // optional partial-index WHERE clause (raw SQL)
+}
+
 type Model struct {
-	Name   string
-	Fields []*Field
-	CRUD   map[string]*Operation
-	Uses   []string
+	Name    string
+	Fields  []*Field
+	CRUD    map[string]*Operation
+	Uses    []string
+	Indexes []IndexDef
 }
 
 type Field struct {

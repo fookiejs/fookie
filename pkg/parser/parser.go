@@ -247,6 +247,23 @@ func (p *Parser) parseModel() (*ast.Model, error) {
 			op.Field = field
 			model.CRUD[opType] = op
 
+		case TOKEN_DOUBLE_AT:
+			p.eat() // consume @@
+			if !isWordToken(p.cur()) {
+				return nil, p.errorf("expected index or unique after @@ in model %q", model.Name)
+			}
+			directive := p.eat().Value
+			switch directive {
+			case "index", "unique":
+				idx, err := p.parseIndexDef(directive == "unique")
+				if err != nil {
+					return nil, err
+				}
+				model.Indexes = append(model.Indexes, idx)
+			default:
+				return nil, p.errorf("unknown model directive @@%s in %q", directive, model.Name)
+			}
+
 		default:
 			return nil, p.errorf("unexpected token in model %q: %q", model.Name, p.cur().Value)
 		}
@@ -256,6 +273,66 @@ func (p *Parser) parseModel() (*ast.Model, error) {
 		return nil, err
 	}
 	return model, nil
+}
+
+// parseIndexDef parses: ([field ASC|DESC, ...], where: "expr")
+func (p *Parser) parseIndexDef(unique bool) (ast.IndexDef, error) {
+	idx := ast.IndexDef{Unique: unique}
+
+	if _, err := p.expect(TOKEN_LPAREN); err != nil {
+		return idx, err
+	}
+	if _, err := p.expect(TOKEN_LBRACKET); err != nil {
+		return idx, err
+	}
+
+	// Parse comma-separated field names with optional ASC/DESC
+	for p.cur().Type != TOKEN_RBRACKET && p.cur().Type != TOKEN_EOF {
+		if !isWordToken(p.cur()) {
+			return idx, p.errorf("expected field name in index definition, got %q", p.cur().Value)
+		}
+		col := p.eat().Value
+		desc := false
+		// Accept DESC/ASC as either their keyword token or a bare identifier (case-insensitive)
+		if p.cur().Type == TOKEN_DESC || (p.cur().Type == TOKEN_IDENTIFIER && strings.EqualFold(p.cur().Value, "desc")) {
+			desc = true
+			p.eat()
+		} else if p.cur().Type == TOKEN_ASC || (p.cur().Type == TOKEN_IDENTIFIER && strings.EqualFold(p.cur().Value, "asc")) {
+			p.eat()
+		}
+		idx.Columns = append(idx.Columns, col)
+		idx.Desc = append(idx.Desc, desc)
+
+		if p.cur().Type == TOKEN_COMMA {
+			p.eat()
+		}
+	}
+
+	if _, err := p.expect(TOKEN_RBRACKET); err != nil {
+		return idx, err
+	}
+
+	// Optional: , where: "expr"
+	if p.cur().Type == TOKEN_COMMA {
+		p.eat()
+		// expect "where" identifier
+		if !isWordToken(p.cur()) || p.cur().Value != "where" {
+			return idx, p.errorf("expected 'where' after column list in index, got %q", p.cur().Value)
+		}
+		p.eat()
+		if _, err := p.expect(TOKEN_COLON); err != nil {
+			return idx, err
+		}
+		if p.cur().Type != TOKEN_STRING {
+			return idx, p.errorf("expected string literal for index where clause, got %q", p.cur().Value)
+		}
+		idx.Where = p.eat().Value
+	}
+
+	if _, err := p.expect(TOKEN_RPAREN); err != nil {
+		return idx, err
+	}
+	return idx, nil
 }
 
 func (p *Parser) parseFields() ([]*ast.Field, error) {

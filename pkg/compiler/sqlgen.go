@@ -24,6 +24,9 @@ func (sg *SQLGenerator) Generate() ([]string, error) {
 	for _, model := range sg.schema.Models {
 		sqls = append(sqls, sg.modelColumnMigrations(model)...)
 	}
+	for _, model := range sg.schema.Models {
+		sqls = append(sqls, sg.modelIndexDDLs(model)...)
+	}
 
 	sqls = append(sqls,
 		sg.auditLogDDL(),
@@ -391,6 +394,46 @@ func SnakeCase(s string) string {
 }
 
 func snake(s string) string { return SnakeCase(s) }
+
+// modelIndexDDLs emits CREATE [UNIQUE] INDEX IF NOT EXISTS statements for
+// every @@index / @@unique directive declared in the model.
+func (sg *SQLGenerator) modelIndexDDLs(m *ast.Model) []string {
+	table := snake(m.Name)
+	var out []string
+	for i, idx := range m.Indexes {
+		// Build column list: "col" ASC|DESC
+		colParts := make([]string, len(idx.Columns))
+		for j, col := range idx.Columns {
+			dir := "ASC"
+			if j < len(idx.Desc) && idx.Desc[j] {
+				dir = "DESC"
+			}
+			colParts[j] = fmt.Sprintf(`"%s" %s`, snake(col), dir)
+		}
+
+		// Derive a stable index name
+		kind := "idx"
+		if idx.Unique {
+			kind = "uniq"
+		}
+		idxName := fmt.Sprintf("%s_%s_%s_%d", kind, table, strings.Join(idx.Columns, "_"), i)
+
+		uniqueKw := ""
+		if idx.Unique {
+			uniqueKw = "UNIQUE "
+		}
+		whereClause := ""
+		if idx.Where != "" {
+			whereClause = fmt.Sprintf(" WHERE %s", idx.Where)
+		}
+
+		out = append(out, fmt.Sprintf(
+			`CREATE %sINDEX IF NOT EXISTS "%s" ON "%s" (%s)%s`,
+			uniqueKw, idxName, table, strings.Join(colParts, ", "), whereClause,
+		))
+	}
+	return out
+}
 
 func (sg *SQLGenerator) appendFilter(sql string, filter *ast.FilterClause) string {
 	if filter == nil {

@@ -65,6 +65,7 @@ const (
 	TOKEN_IDENTIFIER
 	TOKEN_STRING
 	TOKEN_NUMBER
+	TOKEN_DOUBLE_AT // @@
 
 	TOKEN_ASSIGN
 	TOKEN_EQ
@@ -401,6 +402,15 @@ func (l *Lexer) NextToken() Token {
 	case c == ']':
 		l.eat()
 		return Token{Type: TOKEN_RBRACKET, Value: "]", LineNo: line, ColNo: col}
+
+	case c == '@':
+		l.eat()
+		if l.cur() == '@' {
+			l.eat()
+			return Token{Type: TOKEN_DOUBLE_AT, Value: "@@", LineNo: line, ColNo: col}
+		}
+		// single @ — not used in FQL yet; skip silently
+		return l.NextToken()
 
 	default:
 		l.eat()
