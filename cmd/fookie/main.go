@@ -22,6 +22,10 @@ import (
 const usage = `Fookie CLI
 
 Usage:
+  fookie dlq list          [--db <url>] [--limit N]
+  fookie dlq retry <id>    [--db <url>]
+  fookie dlq retry-all     [--db <url>]
+  fookie dlq purge         [--db <url>] [--before 2024-01-01]
   fookie migrate plan    [--schema <file>] [--db <url>]
   fookie migrate apply   [--schema <file>] [--db <url>] [--label <name>]
   fookie migrate history [--db <url>]
@@ -37,6 +41,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "dlq":
+		cmdDLQ(os.Args[2:])
 	case "migrate":
 		cmdMigrate(os.Args[2:])
 	case "serve":
@@ -57,6 +63,118 @@ func main() {
 		run(root, "helm", hargs...)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
+		os.Exit(2)
+	}
+}
+
+// ── dlq ──────────────────────────────────────────────────────────────────────
+
+func cmdDLQ(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "dlq needs a subcommand: list | retry <id> | retry-all | purge")
+		os.Exit(2)
+	}
+
+	fs := flag.NewFlagSet("dlq", flag.ExitOnError)
+	dbURL := fs.String("db", envOr("DB_URL", "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"), "PostgreSQL connection string")
+	limit := fs.Int("limit", 50, "Max rows to list")
+	beforeStr := fs.String("before", "", "Purge items created before this date (YYYY-MM-DD)")
+
+	sub := args[0]
+	fs.Parse(args[1:])
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db := openDB(*dbURL)
+	defer db.Close()
+
+	switch sub {
+	case "list":
+		rows, err := db.QueryContext(ctx,
+			`SELECT id, external_name, entity_type, entity_id, retry_count, error_message, created_at
+			 FROM outbox WHERE status='failed'
+			 ORDER BY created_at DESC LIMIT $1`, *limit)
+		if err != nil {
+			fatal(err)
+		}
+		defer rows.Close()
+		fmt.Printf("%-36s  %-20s  %-5s  %s\n", "ID", "EXTERNAL", "RETRY", "ERROR (truncated)")
+		fmt.Println(strings.Repeat("-", 90))
+		n := 0
+		for rows.Next() {
+			var id, extName, eType string
+			var eID sql.NullString
+			var retryCount int
+			var errMsg sql.NullString
+			var createdAt time.Time
+			if err := rows.Scan(&id, &extName, &eType, &eID, &retryCount, &errMsg, &createdAt); err != nil {
+				fatal(err)
+			}
+			msg := ""
+			if errMsg.Valid {
+				msg = errMsg.String
+				if len(msg) > 30 {
+					msg = msg[:30] + "…"
+				}
+			}
+			fmt.Printf("%-36s  %-20s  %-5d  %s\n", id, extName, retryCount, msg)
+			n++
+		}
+		if n == 0 {
+			fmt.Println("No failed items in the dead-letter queue.")
+		}
+
+	case "retry":
+		if fs.NArg() == 0 {
+			fmt.Fprintln(os.Stderr, "usage: fookie dlq retry <id>")
+			os.Exit(2)
+		}
+		id := fs.Arg(0)
+		res, err := db.ExecContext(ctx,
+			`UPDATE outbox SET status='pending', retry_count=0, error_message=NULL, run_after=NULL
+			 WHERE id=$1 AND status='failed'`, id)
+		if err != nil {
+			fatal(err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			fmt.Fprintf(os.Stderr, "item %s not found or not in failed status\n", id)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Re-queued %s\n", id)
+
+	case "retry-all":
+		res, err := db.ExecContext(ctx,
+			`UPDATE outbox SET status='pending', retry_count=0, error_message=NULL, run_after=NULL
+			 WHERE status='failed'`)
+		if err != nil {
+			fatal(err)
+		}
+		n, _ := res.RowsAffected()
+		fmt.Printf("✓ Re-queued %d failed item(s)\n", n)
+
+	case "purge":
+		var before time.Time
+		if *beforeStr != "" {
+			var err error
+			before, err = time.Parse("2006-01-02", *beforeStr)
+			if err != nil {
+				fatal(fmt.Errorf("invalid --before date %q (want YYYY-MM-DD): %w", *beforeStr, err))
+			}
+		} else {
+			before = time.Now().AddDate(0, 0, -30) // default: 30 days ago
+		}
+		res, err := db.ExecContext(ctx,
+			`DELETE FROM outbox WHERE status='failed' AND created_at < $1`, before)
+		if err != nil {
+			fatal(err)
+		}
+		n, _ := res.RowsAffected()
+		fmt.Printf("✓ Purged %d failed item(s) older than %s\n", n, before.Format("2006-01-02"))
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown dlq subcommand: %s\n", sub)
 		os.Exit(2)
 	}
 }

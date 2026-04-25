@@ -440,6 +440,45 @@ func (op *OutboxProcessor) Stop() {
 	close(op.done)
 }
 
+// RetryFailed resets a dead-letter (status='failed') outbox item back to
+// 'pending' with retry_count=0 so it will be processed again on the next poll.
+// Returns an error if the item is not found or is not in 'failed' status.
+func (op *OutboxProcessor) RetryFailed(ctx context.Context, id string) error {
+	res, err := op.db.ExecContext(ctx,
+		`UPDATE outbox
+		 SET status='pending', retry_count=0, error_message=NULL, run_after=NULL
+		 WHERE id=$1 AND status='failed'`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("dlq retry: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("dlq retry: item %s not found or not in failed status", id)
+	}
+	// Kick the processor immediately
+	select {
+	case op.runAfterCh <- struct{}{}:
+	default:
+	}
+	op.processPending()
+	return nil
+}
+
+// PurgeFailedBefore deletes failed outbox items older than the given cutoff.
+// Returns the number of rows deleted.
+func (op *OutboxProcessor) PurgeFailedBefore(ctx context.Context, before time.Time) (int64, error) {
+	res, err := op.db.ExecContext(ctx,
+		`DELETE FROM outbox WHERE status='failed' AND created_at < $1`,
+		before,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("dlq purge: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // findExternal looks up an External definition from the schema by name.
 // Returns nil if not found (e.g. cron jobs have no External definition).
 func (op *OutboxProcessor) findExternal(name string) *ast.External {
