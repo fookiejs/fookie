@@ -25,19 +25,43 @@ type Event struct {
 type Bus struct {
 	mu          sync.RWMutex
 	subscribers map[chan Event]struct{}
+	lastEvent   map[string]Event // key: "model:id", caches latest event for dedup
 }
 
 func NewBus() *Bus {
 	return &Bus{
 		subscribers: make(map[chan Event]struct{}),
+		lastEvent:   make(map[string]Event),
 	}
 }
 
 func (b *Bus) Publish(ev Event) {
 	ev.Timestamp = time.Now()
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	cacheKey := ev.Model + ":" + ev.ID
+
+	b.mu.Lock()
+	// Dedup: if same operation on same model:id within short window, skip publish
+	if last, exists := b.lastEvent[cacheKey]; exists {
+		if last.Op == ev.Op && (ev.Op == OpCreate || ev.Op == OpUpdate) {
+			// Merge payload and update cache, but don't broadcast duplicate
+			for k, v := range ev.Payload {
+				last.Payload[k] = v
+			}
+			last.Timestamp = ev.Timestamp
+			b.lastEvent[cacheKey] = last
+			b.mu.Unlock()
+			return
+		}
+	}
+	b.lastEvent[cacheKey] = ev
+	subscribers := make([]chan Event, 0, len(b.subscribers))
 	for ch := range b.subscribers {
+		subscribers = append(subscribers, ch)
+	}
+	b.mu.Unlock()
+
+	// Send outside lock to avoid blocking
+	for _, ch := range subscribers {
 		select {
 		case ch <- ev:
 		default:
