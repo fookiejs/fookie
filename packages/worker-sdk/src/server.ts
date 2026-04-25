@@ -21,9 +21,15 @@
  *   }
  */
 
-import http from "node:http";
-import type { Store, ExternalHandlerFn, ExternalInput, WorkerCallRequest, WorkerCallResponse } from "./types.js";
-import { FookieClient } from "./client.js";
+import http from 'node:http';
+import type {
+  Store,
+  ExternalHandlerFn,
+  ExternalInput,
+  WorkerCallRequest,
+  WorkerCallResponse,
+} from './types.js';
+import { FookieClient } from './client.js';
 
 export type ExternalServerOptions = {
   /** TCP port to listen on. Default: 3001 */
@@ -46,7 +52,7 @@ export class ExternalServer {
 
   constructor(options: ExternalServerOptions = {}) {
     this.port = options.port ?? 3001;
-    this.fookieUrl = options.fookieUrl ?? "http://localhost:8080";
+    this.fookieUrl = options.fookieUrl ?? 'http://localhost:8080';
     this.adminKey = options.adminKey;
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
@@ -65,10 +71,10 @@ export class ExternalServer {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
         this.handleRequest(req, res).catch((err) => {
-          console.error("[fookie/worker] unhandled error:", err);
+          console.error('[fookie/worker] unhandled error:', err);
           if (!res.headersSent) {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "internal server error" }));
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'internal server error' }));
           }
         });
       });
@@ -78,7 +84,7 @@ export class ExternalServer {
         resolve();
       });
 
-      this.server.once("error", reject);
+      this.server.once('error', reject);
     });
   }
 
@@ -94,24 +100,24 @@ export class ExternalServer {
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     // Health check
-    if (req.method === "GET" && req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", handlers: [...this.handlers.keys()] }));
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', handlers: [...this.handlers.keys()] }));
       return;
     }
 
     // POST /call/:name
     const match = req.url?.match(/^\/call\/([^/?]+)/);
-    if (req.method !== "POST" || !match) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not found" }));
+    if (req.method !== 'POST' || !match) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
 
     const name = decodeURIComponent(match[1]);
     const handler = this.handlers.get(name);
     if (!handler) {
-      res.writeHead(404, { "Content-Type": "application/json" });
+      res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `no handler registered for external "${name}"` }));
       return;
     }
@@ -120,8 +126,8 @@ export class ExternalServer {
     try {
       body = await readJSON<WorkerCallRequest>(req);
     } catch {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid JSON body' }));
       return;
     }
 
@@ -144,8 +150,8 @@ export class ExternalServer {
       response = { error: msg };
     }
 
-    const statusCode = "error" in response && response.error ? 500 : 200;
-    res.writeHead(statusCode, { "Content-Type": "application/json" });
+    const statusCode = 'error' in response && response.error ? 500 : 200;
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(response));
   }
 
@@ -161,9 +167,7 @@ export class ExternalServer {
 
     return {
       async read(model, filter = {}) {
-        const filterArgs = Object.keys(filter).length
-          ? `(filter: ${jsonToGQLArg(filter)})`
-          : "";
+        const filterArgs = Object.keys(filter).length ? `(filter: ${jsonToGQLArg(filter)})` : '';
         const fieldName = `all_${toSnake(model)}`;
         const gql = `query { ${fieldName}${filterArgs} { id } }`;
         const res = await client.request<Record<string, unknown[]>>({ query: gql });
@@ -201,25 +205,23 @@ export class ExternalServer {
 
 function readJSON<T>(req: http.IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => (raw += chunk));
-    req.on("end", () => {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
       try {
         resolve(JSON.parse(raw) as T);
       } catch (e) {
         reject(e);
       }
     });
-    req.on("error", reject);
+    req.on('error', reject);
   });
 }
 
 /** Convert camelCase or PascalCase to snake_case (matches fookie's naming). */
 function toSnake(s: string): string {
-  return s
-    .replace(/([A-Z])/g, (_, c: string) => `_${c.toLowerCase()}`)
-    .replace(/^_/, "");
+  return s.replace(/([A-Z])/g, (_, c: string) => `_${c.toLowerCase()}`).replace(/^_/, '');
 }
 
 /**
@@ -228,15 +230,15 @@ function toSnake(s: string): string {
  * For complex filtering, use the client.request() API directly.
  */
 function jsonToGQLArg(obj: unknown): string {
-  if (obj === null || obj === undefined) return "null";
-  if (typeof obj === "boolean") return String(obj);
-  if (typeof obj === "number") return String(obj);
-  if (typeof obj === "string") return JSON.stringify(obj);
-  if (Array.isArray(obj)) return `[${obj.map(jsonToGQLArg).join(", ")}]`;
-  if (typeof obj === "object") {
+  if (obj === null || obj === undefined) return 'null';
+  if (typeof obj === 'boolean') return String(obj);
+  if (typeof obj === 'number') return String(obj);
+  if (typeof obj === 'string') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return `[${obj.map(jsonToGQLArg).join(', ')}]`;
+  if (typeof obj === 'object') {
     const entries = Object.entries(obj as Record<string, unknown>)
       .map(([k, v]) => `${k}: ${jsonToGQLArg(v)}`)
-      .join(", ");
+      .join(', ');
     return `{${entries}}`;
   }
   return JSON.stringify(obj);

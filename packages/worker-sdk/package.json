@@ -22,7 +22,13 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["fookie", "worker", "external", "handler", "sdk"],
+  "keywords": [
+    "fookie",
+    "worker",
+    "external",
+    "handler",
+    "sdk"
+  ],
   "license": "MIT",
   "dependencies": {
     "@fookie/types": "*"

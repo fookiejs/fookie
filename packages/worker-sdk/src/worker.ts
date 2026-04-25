@@ -1,5 +1,5 @@
-import { FookieClient } from "./client.js";
-import type { WorkerContext } from "./types.js";
+import { FookieClient } from './client.js';
+import type { WorkerContext } from './types.js';
 
 export type WorkerHandler = (ctx: WorkerContext) => Promise<void>;
 
@@ -8,8 +8,12 @@ export type WorkerLoopOptions = {
   onError?: (error: unknown) => void;
 };
 
-export async function runWorkerLoop(handler: WorkerHandler, options: WorkerLoopOptions = {}): Promise<never> {
+export async function runWorkerLoop(
+  handler: WorkerHandler,
+  options: WorkerLoopOptions = {},
+): Promise<never> {
   const intervalMs = options.intervalMs ?? 1000;
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       await handler({});

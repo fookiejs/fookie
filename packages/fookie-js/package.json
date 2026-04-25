@@ -16,7 +16,12 @@
     "dev": "tsc --watch",
     "clean": "rimraf dist"
   },
-  "keywords": ["fookie", "graphql", "websocket", "client"],
+  "keywords": [
+    "fookie",
+    "graphql",
+    "websocket",
+    "client"
+  ],
   "license": "MIT",
   "dependencies": {
     "@fookie/types": "*",

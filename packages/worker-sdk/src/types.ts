@@ -32,10 +32,7 @@ export type Store = {
 };
 
 /** The function signature for an external handler. */
-export type ExternalHandlerFn = (
-  input: ExternalInput,
-  store: Store,
-) => Promise<ExternalResult>;
+export type ExternalHandlerFn = (input: ExternalInput, store: Store) => Promise<ExternalResult>;
 
 /** Shape of the request body that fookie sends to POST /call/:name */
 export type WorkerCallRequest = {
