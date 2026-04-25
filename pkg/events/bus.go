@@ -74,7 +74,9 @@ func (b *Bus) PublishCRUD(op, model, id string, payload map[string]interface{}) 
 }
 
 func (b *Bus) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 64)
+	// Buffer size 16: most subscribers process events immediately (sub-millisecond latency)
+	// Slow subscribers (buffer full) are dropped via non-blocking send, preventing backpressure
+	ch := make(chan Event, 16)
 	b.mu.Lock()
 	b.subscribers[ch] = struct{}{}
 	b.mu.Unlock()

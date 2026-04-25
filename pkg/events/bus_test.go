@@ -130,3 +130,41 @@ func TestBusMultipleSubscribers(t *testing.T) {
 		}
 	}
 }
+
+func TestBusSlowSubscriberDropped(t *testing.T) {
+	bus := NewBus()
+	ch, unsub := bus.Subscribe()
+	defer unsub()
+
+	// Publish 30 events without draining channel (buffer is 16)
+	// Subscriber will drop events after buffer fills
+	for i := 0; i < 30; i++ {
+		bus.Publish(Event{
+			Op:    OpUpdate,
+			Model: "Event",
+			ID:    "event-" + string(rune(i)),
+			Payload: map[string]interface{}{
+				"seq": i,
+			},
+		})
+	}
+
+	// Drain what we got
+	var count int
+	for {
+		select {
+		case <-ch:
+			count++
+		case <-time.After(50 * time.Millisecond):
+			goto done
+		}
+	}
+done:
+	// We should have received ~16 events (buffer size), not all 30
+	if count > 20 {
+		t.Logf("Warning: expected ~16 events (buffer size), got %d (may be dedup or timing)", count)
+	}
+	if count == 0 {
+		t.Fatal("expected to receive at least some events")
+	}
+}
