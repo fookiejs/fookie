@@ -43,7 +43,20 @@
       "Bash(curl -sN --max-time 6 -X POST http://localhost:8080/graphql -H 'Content-Type: application/json' -H 'admin_key: demo' -d '{\"query\":\"subscription { room_graphql_message\\(room_id: \\\\\"9b8b43ec-b16b-49eb-91c5-f24c9d40a2ff\\\\\"\\) { method } }\"}')",
       "Bash(curl -sN --max-time 4 -X POST http://localhost:8080/graphql -H 'Content-Type: application/json' -H 'admin_key: demo' -d '{\"query\":\"subscription { room_graphql_message\\(room_id: \\\\\"9b8b43ec-b16b-49eb-91c5-f24c9d40a2ff\\\\\"\\) { method payload { body } } }\"}')",
       "Bash(curl -s -X POST http://localhost:8080/graphql -H 'Content-Type: application/json' -H 'admin_key: demo' -d '{\"query\":\"{ all_room { id name } }\"}')",
-      "Bash(git reset *)"
+      "Bash(git reset *)",
+      "Bash(docker compose *)",
+      "Bash(helm template *)",
+      "Bash(where helm *)",
+      "Bash(helm version *)",
+      "Bash(make help *)",
+      "Bash(docker run *)",
+      "Bash(chmod +x fookie.sh)",
+      "Bash(bash fookie.sh help)",
+      "Bash(python -c 'import json; json.load\\(open\\('\\\\''__TRACKED_VAR__'\\\\''\\)\\)')",
+      "Bash(python -c 'import yaml; [yaml.safe_load\\(open\\(f\\)\\) for f in [ *)",
+      "Bash(python -c ' *)",
+      "Bash(git merge secenek-2-ws-server --no-ff -m ' *)",
+      "Bash(git rm *)"
     ]
   }
 }

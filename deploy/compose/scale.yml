@@ -2,7 +2,7 @@
 # without "address already in use" errors.
 #
 # Usage (from repo root):
-#   docker compose -f demo/docker-compose.yml -f deploy/compose/scale.yml \
+#   docker compose -f docker-compose.yml -f deploy/compose/scale.yml \
 #     up --scale fookie-server=3 --scale fookie-worker=5
 #
 # Traffic reaches the servers via the internal Docker network;

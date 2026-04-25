@@ -20,7 +20,7 @@ COPY --from=builder /app/server .
 
 ENV DB_URL=postgres://localhost/fookie
 ENV PORT=:8080
-ENV SCHEMA_PATH=/app/demo/schema.fql
+ENV SCHEMA_PATH=/schema.fql
 
 EXPOSE 8080
 

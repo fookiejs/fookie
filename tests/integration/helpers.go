@@ -3,9 +3,6 @@ package integration
 import (
 	"context"
 	"database/sql"
-	"os"
-	"path/filepath"
-	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -21,17 +18,44 @@ import (
 	fookieruntime "github.com/fookiejs/fookie/pkg/runtime"
 )
 
-func projectRoot() string {
-	_, filename, _, _ := goruntime.Caller(0)
-	return filepath.Join(filepath.Dir(filename), "..", "..")
+const integrationSchemaFQL = `
+model User {
+  fields {
+    email: email
+    name: string
+  }
+  create {
+    rule { notEmptyString(body.email) notEmptyString(body.name) }
+    modify {}
+  }
+  read {}
+  update { modify {} }
+  delete {}
 }
 
-func parseDemoSchema(t *testing.T) *ast.Schema {
-	t.Helper()
-	content, err := os.ReadFile(filepath.Join(projectRoot(), "demo", "schema.fql"))
-	require.NoError(t, err)
+model Village {
+  fields {
+    owner: relation(User)
+    name: string
+    food: number
+  }
+  create {
+    rule {
+      body.owner_id != null
+      notEmptyString(body.name)
+      body.food >= 0
+    }
+    modify {}
+  }
+  read {}
+  update { modify {} }
+  delete {}
+}
+`
 
-	lexer := parser.NewLexer(string(content))
+func parseIntegrationSchema(t *testing.T) *ast.Schema {
+	t.Helper()
+	lexer := parser.NewLexer(integrationSchemaFQL)
 	tokens := lexer.Tokenize()
 	p := parser.NewParser(tokens)
 	schema, err := p.Parse()
@@ -63,7 +87,7 @@ func setupDB(t *testing.T) (*fookieruntime.Executor, *sql.DB, func()) {
 	require.NoError(t, err)
 	require.NoError(t, db.Ping())
 
-	schema := parseDemoSchema(t)
+	schema := parseIntegrationSchema(t)
 	sqlGen := compiler.NewSQLGenerator(schema)
 	sqls, err := sqlGen.Generate()
 	require.NoError(t, err)

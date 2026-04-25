@@ -9,6 +9,14 @@ type Schema struct {
 	Seeds     []*SeedBlock
 	Crons     []*CronBlock
 	Setups    []*SeedBlock
+	Configs   []*ConfigEntry
+}
+
+type ConfigEntry struct {
+	Key    string
+	Type   FieldType
+	Value  interface{}
+	LineNo int
 }
 
 type SeedBlock struct {

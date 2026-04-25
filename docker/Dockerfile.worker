@@ -18,9 +18,7 @@ WORKDIR /app
 COPY --from=builder /app/worker .
 
 ENV DB_URL=postgres://localhost/fookie
-ENV SCHEMA_PATH=/app/demo/schema.fql
+ENV SCHEMA_PATH=/schema.fql
 ENV POLL_INTERVAL=5s
-
-COPY --from=builder /app/demo/schema.fql /app/demo/schema.fql
 
 CMD ["/app/worker"]

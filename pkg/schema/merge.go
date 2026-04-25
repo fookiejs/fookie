@@ -77,4 +77,21 @@ func mergeInto(dst, src *ast.Schema) {
 	dst.Seeds = append(dst.Seeds, src.Seeds...)
 	dst.Setups = append(dst.Setups, src.Setups...)
 	dst.Crons = append(dst.Crons, src.Crons...)
+	mergeConfigs(dst, src.Configs)
+}
+
+func mergeConfigs(dst *ast.Schema, src []*ast.ConfigEntry) {
+	for _, c := range src {
+		found := false
+		for i, existing := range dst.Configs {
+			if existing.Key == c.Key {
+				dst.Configs[i] = c
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst.Configs = append(dst.Configs, c)
+		}
+	}
 }

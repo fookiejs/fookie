@@ -1,14 +1,3 @@
-###############################################################################
-# Fookie — single docker-compose.yml
-#
-# Usage:
-#   docker compose up -d                            # app + postgres + redis
-#   docker compose --profile observability up -d   # + Grafana hub (full stack)
-#   docker compose build                            # (re)build fookie image
-#
-# Override any variable in .env (copy from .env.example):
-#   DB_URL, REDIS_URL, OTLP_ENDPOINT, LOKI_PUSH_URL, FOOKIE_PORT, ...
-###############################################################################
 
 name: fookie
 
@@ -21,11 +10,10 @@ x-fookie-common: &fookie-common
     DB_URL:       ${DB_URL:-postgres://fookie:fookie_dev@postgres:5432/fookie?sslmode=disable}
     REDIS_URL:    ${REDIS_URL:-redis://redis:6379}
     SCHEMA_PATH:  /schema.fql
-    # Observability — automatically wired when running with --profile observability
     OTLP_ENDPOINT:  ${OTLP_ENDPOINT:-}
     LOKI_PUSH_URL:  ${LOKI_PUSH_URL:-}
   volumes:
-    - ${SCHEMA_FILE:-./demo/schema.fql}:/schema.fql:ro
+    - ${SCHEMA_FILE:-./schema.fql}:/schema.fql:ro
   depends_on:
     postgres:
       condition: service_healthy
@@ -35,9 +23,7 @@ x-fookie-common: &fookie-common
 
 services:
 
-  # ── Data layer ──────────────────────────────────────────────────────────────
-  # Set DB_URL in .env to point to an external Postgres and disable this service:
-  #   docker compose up -d --scale postgres=0 fookie-server fookie-worker redis
+
   postgres:
     image: postgres:15-alpine
     environment:

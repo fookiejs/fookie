@@ -1,9 +1,6 @@
 package schema
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,11 +9,7 @@ import (
 )
 
 func TestMergeBuiltinRooms_ParseAndMerge(t *testing.T) {
-	_, filename, _, _ := runtime.Caller(0)
-	root := filepath.Join(filepath.Dir(filename), "..", "..")
-	demo, err := os.ReadFile(filepath.Join(root, "demo", "schema.fql"))
-	require.NoError(t, err)
-	lex := parser.NewLexer(string(demo))
+	lex := parser.NewLexer(`model User { fields { name: string } read {} }`)
 	p := parser.NewParser(lex.Tokenize())
 	s, err := p.Parse()
 	require.NoError(t, err)

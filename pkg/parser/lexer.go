@@ -13,6 +13,7 @@ const (
 	TOKEN_MODULE
 	TOKEN_SEED
 	TOKEN_CRON
+	TOKEN_CONFIG
 	TOKEN_USE
 	TOKEN_SETUP
 	TOKEN_NOTIFY
@@ -108,6 +109,7 @@ var keywords = map[string]TokenType{
 	"module":   TOKEN_MODULE,
 	"seed":     TOKEN_SEED,
 	"cron":     TOKEN_CRON,
+	"config":   TOKEN_CONFIG,
 	"use":      TOKEN_USE,
 	"setup":    TOKEN_SETUP,
 	"notify":   TOKEN_NOTIFY,
@@ -123,8 +125,8 @@ var keywords = map[string]TokenType{
 	"effect":     TOKEN_EFFECT,
 	"compensate": TOKEN_COMPENSATE,
 
-	"filter": TOKEN_FILTER,
-	"where":  TOKEN_FILTER,
+	"filter":  TOKEN_FILTER,
+	"where":   TOKEN_FILTER,
 	"orderBy": TOKEN_ORDERBY,
 	"cursor":  TOKEN_CURSOR,
 	"return":  TOKEN_RETURN,

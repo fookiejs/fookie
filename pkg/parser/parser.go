@@ -168,6 +168,14 @@ func (p *Parser) Parse() (*ast.Schema, error) {
 			}
 			schema.Crons = append(schema.Crons, cb)
 
+		case TOKEN_CONFIG:
+			p.eat()
+			cfgs, err := p.parseConfigBlock()
+			if err != nil {
+				return nil, err
+			}
+			schema.Configs = append(schema.Configs, cfgs...)
+
 		case TOKEN_SETUP:
 			p.eat()
 			sb, err := p.parseSeedBlock()
@@ -717,7 +725,7 @@ func isWordToken(t Token) bool {
 		TOKEN_ROLE, TOKEN_RULE, TOKEN_MODIFY, TOKEN_EFFECT, TOKEN_COMPENSATE,
 		TOKEN_FILTER, TOKEN_ORDERBY, TOKEN_CURSOR, TOKEN_RETURN,
 		TOKEN_USE, TOKEN_FIELDS, TOKEN_BODY, TOKEN_OUTPUT,
-		TOKEN_SETUP, TOKEN_NOTIFY:
+		TOKEN_SETUP, TOKEN_NOTIFY, TOKEN_CONFIG:
 		return true
 	}
 	return false
@@ -1095,6 +1103,9 @@ func (p *Parser) parsePrimary() (ast.Expression, error) {
 }
 
 func isBuiltinValidator(name string) bool {
+	if name == "config" {
+		return true
+	}
 	return validator.BuiltinRegistered(name)
 }
 
@@ -1368,6 +1379,73 @@ func (p *Parser) parseSeedBlock() (*ast.SeedBlock, error) {
 		return nil, err
 	}
 	return sb, nil
+}
+
+func (p *Parser) parseConfigBlock() ([]*ast.ConfigEntry, error) {
+	if _, err := p.expect(TOKEN_LBRACE); err != nil {
+		return nil, err
+	}
+	var entries []*ast.ConfigEntry
+	for p.cur().Type != TOKEN_RBRACE && p.cur().Type != TOKEN_EOF {
+		if !isWordToken(p.cur()) {
+			return nil, p.errorf("config: expected key, got %q", p.cur().Value)
+		}
+		keyTok := p.eat()
+		if p.cur().Type == TOKEN_COLON {
+			p.eat()
+		}
+		if !isType(p.cur()) {
+			return nil, p.errorf("config %q: expected type", keyTok.Value)
+		}
+		ft, _ := typeString(p.eat())
+		val := defaultConfigValue(ft)
+		if p.cur().Type == TOKEN_ASSIGN {
+			p.eat()
+			parsed, err := p.parseSeedValue()
+			if err != nil {
+				return nil, err
+			}
+			val = parsed
+		}
+		if p.cur().Type == TOKEN_COMMA {
+			p.eat()
+		}
+		entries = append(entries, &ast.ConfigEntry{
+			Key:    keyTok.Value,
+			Type:   ft,
+			Value:  coerceConfigValue(ft, val),
+			LineNo: keyTok.LineNo,
+		})
+	}
+	if _, err := p.expect(TOKEN_RBRACE); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func defaultConfigValue(ft ast.FieldType) interface{} {
+	switch ft {
+	case ast.TypeNumber:
+		return 0
+	case ast.TypeBoolean:
+		return false
+	default:
+		return ""
+	}
+}
+
+func coerceConfigValue(ft ast.FieldType, val interface{}) interface{} {
+	if ft == ast.TypeNumber {
+		switch v := val.(type) {
+		case int:
+			return float64(v)
+		case int64:
+			return float64(v)
+		case float32:
+			return float64(v)
+		}
+	}
+	return val
 }
 
 func (p *Parser) parseSeedRecord() (map[string]interface{}, error) {

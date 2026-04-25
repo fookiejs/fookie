@@ -1,5 +1,5 @@
-COMPOSE_DEMO     = -f demo/docker-compose.yml -f demo/compose.demo.yml
-COMPOSE_SCALE    = -f demo/docker-compose.yml -f deploy/compose/scale.yml
+COMPOSE_APP      = -f docker-compose.yml
+COMPOSE_SCALE    = -f docker-compose.yml -f deploy/compose/scale.yml
 COMPOSE_PLATFORM = -f deploy/compose/postgres.yml -f deploy/compose/observability.yml -f deploy/compose/apps.yml
 
 # ---------------------------------------------------------------------------
@@ -134,37 +134,37 @@ redis-down:
 	docker compose -f deploy/compose/postgres.yml stop redis
 
 run-parser: build-parser
-	@echo "Running parser on demo/schema.fql..."
-	./bin/parser -schema demo/schema.fql -sql
+	@echo "Running parser on schema.fql..."
+	./bin/parser -schema schema.fql -sql
 
 docker-build:
 	@echo "Building Docker images..."
-	docker compose $(COMPOSE_DEMO) build
+	docker compose $(COMPOSE_APP) build
 
 docker-up: docker-build
 	@echo "Starting Docker containers..."
-	docker compose $(COMPOSE_DEMO) up -d
+	docker compose $(COMPOSE_APP) up -d
 	@echo "Waiting for services to start..."
 	@sleep 5
 	@echo "Services are up!"
-	@docker compose $(COMPOSE_DEMO) ps
+	@docker compose $(COMPOSE_APP) ps
 
 docker-down:
 	@echo "Stopping Docker containers..."
-	docker compose $(COMPOSE_DEMO) down
+	docker compose $(COMPOSE_APP) down
 
 docker-logs-server:
-	docker compose $(COMPOSE_DEMO) logs -f fookie-server
+	docker compose $(COMPOSE_APP) logs -f fookie-server
 
 docker-logs-worker:
-	docker compose $(COMPOSE_DEMO) logs -f fookie-worker
+	docker compose $(COMPOSE_APP) logs -f fookie-worker
 
 docker-logs-postgres:
-	docker compose $(COMPOSE_DEMO) logs -f postgres
+	docker compose $(COMPOSE_APP) logs -f postgres
 
 docker-clean: docker-down
 	@echo "Cleaning Docker volumes..."
-	docker compose $(COMPOSE_DEMO) down -v
+	docker compose $(COMPOSE_APP) down -v
 	@echo "Docker cleanup complete"
 
 # --- Scale testing -------------------------------------------------------
@@ -228,7 +228,7 @@ helm-status:
 		--namespace $(KUBE_NAMESPACE)
 
 docker-shell-postgres:
-	docker compose $(COMPOSE_DEMO) exec postgres psql -U fookie -d fookie
+	docker compose $(COMPOSE_APP) exec postgres psql -U fookie -d fookie
 
 fmt:
 	@echo "Formatting code..."
@@ -240,7 +240,7 @@ lint:
 
 generate-migrations:
 	@echo "Generating migrations from schema..."
-	./bin/parser -schema demo/schema.fql -sql > migrations/001_initial.sql
+	./bin/parser -schema schema.fql -sql > migrations/001_initial.sql
 
 deps:
 	go mod download

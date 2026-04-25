@@ -199,7 +199,7 @@ func cmdMigrate(args []string) {
 	}
 
 	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
-	schemaPath := fs.String("schema", envOr("SCHEMA_PATH", "demo/schema.fql"), "Path to .fql schema file or directory")
+	schemaPath := fs.String("schema", envOr("SCHEMA_PATH", "schema.fql"), "Path to .fql schema file or directory")
 	dbURL := fs.String("db", envOr("DB_URL", "postgres://fookie:fookie_dev@localhost:5432/fookie?sslmode=disable"), "PostgreSQL connection string")
 	label := fs.String("label", "manual-"+time.Now().Format("20060102-150405"), "Migration label (apply only)")
 

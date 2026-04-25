@@ -2,9 +2,6 @@ package tests
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -19,16 +16,44 @@ import (
 	"github.com/graphql-go/graphql"
 )
 
-func projectRoot() string {
-	_, filename, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(filename), "..", "..")
+const testSchemaFQL = `
+model User {
+  fields {
+    email: email
+    name: string
+  }
+  create {
+    rule { notEmptyString(body.email) notEmptyString(body.name) }
+    modify {}
+  }
+  read {}
+  update { modify {} }
+  delete {}
 }
 
-func parseDemoSchema(t *testing.T) *ast.Schema {
+model Village {
+  fields {
+    owner: relation(User)
+    name: string
+    food: number
+  }
+  create {
+    rule {
+      body.owner_id != null
+      notEmptyString(body.name)
+      body.food >= 0
+    }
+    modify {}
+  }
+  read {}
+  update { modify {} }
+  delete {}
+}
+`
+
+func parseTestSchema(t *testing.T) *ast.Schema {
 	t.Helper()
-	content, err := os.ReadFile(filepath.Join(projectRoot(), "demo", "schema.fql"))
-	require.NoError(t, err)
-	lexer := parser.NewLexer(string(content))
+	lexer := parser.NewLexer(testSchemaFQL)
 	tokens := lexer.Tokenize()
 	p := parser.NewParser(tokens)
 	schema, err := p.Parse()
@@ -69,60 +94,52 @@ func TestGraphQL_TypeMapping(t *testing.T) {
 	}
 }
 
-func TestGraphQL_BuildSchema_BankingDemo(t *testing.T) {
-	schema := parseDemoSchema(t)
+func TestGraphQL_BuildSchema_CoreModels(t *testing.T) {
+	schema := parseTestSchema(t)
 	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
 	queryFields := gqlSchema.QueryType().Fields()
 
-	assert.Contains(t, queryFields, "all_bank_wallet")
-	assert.Contains(t, queryFields, "all_bank_user")
-	assert.Contains(t, queryFields, "all_wallet_transfer")
-	assert.Contains(t, queryFields, "all_atm_transaction")
+	assert.Contains(t, queryFields, "all_user")
+	assert.Contains(t, queryFields, "all_village")
 
 	mutFields := gqlSchema.MutationType().Fields()
 
-	assert.Contains(t, mutFields, "create_bank_wallet")
-	assert.Contains(t, mutFields, "create_bank_user")
-	assert.Contains(t, mutFields, "create_wallet_transfer")
-	assert.Contains(t, mutFields, "create_atm_transaction")
+	assert.Contains(t, mutFields, "create_user")
+	assert.Contains(t, mutFields, "create_village")
 
-	assert.Contains(t, mutFields, "update_bank_wallet")
-	assert.Contains(t, mutFields, "update_bank_user")
-	assert.Contains(t, mutFields, "update_wallet_transfer")
-	assert.Contains(t, mutFields, "update_atm_transaction")
+	assert.Contains(t, mutFields, "update_user")
+	assert.Contains(t, mutFields, "update_village")
 
-	assert.Contains(t, mutFields, "delete_bank_wallet")
-	assert.Contains(t, mutFields, "delete_bank_user")
-	assert.Contains(t, mutFields, "delete_wallet_transfer")
-	assert.Contains(t, mutFields, "delete_atm_transaction")
+	assert.Contains(t, mutFields, "delete_user")
+	assert.Contains(t, mutFields, "delete_village")
 }
 
-func TestGraphQL_RelationFields_BankUser(t *testing.T) {
-	schema := parseDemoSchema(t)
+func TestGraphQL_RelationFields(t *testing.T) {
+	schema := parseTestSchema(t)
 	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
 	queryFields := gqlSchema.QueryType().Fields()
-	userField, ok := queryFields["all_bank_user"]
+	villageField, ok := queryFields["all_village"]
 	require.True(t, ok)
 
-	userObj := unwrapObject(userField.Type)
-	require.NotNil(t, userObj)
+	villageObj := unwrapObject(villageField.Type)
+	require.NotNil(t, villageObj)
 
-	userFields := userObj.Fields()
-	assert.Contains(t, userFields, "wallet_id")
-	assert.Contains(t, userFields, "wallet")
+	villageFields := villageObj.Fields()
+	assert.Contains(t, villageFields, "owner_id")
+	assert.Contains(t, villageFields, "owner")
 }
 
 func TestGraphQL_FilterArg(t *testing.T) {
-	schema := parseDemoSchema(t)
+	schema := parseTestSchema(t)
 	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
 	queryFields := gqlSchema.QueryType().Fields()
-	for _, name := range []string{"all_bank_user", "all_bank_wallet", "all_wallet_transfer"} {
+	for _, name := range []string{"all_user", "all_village"} {
 		field, ok := queryFields[name]
 		require.True(t, ok, "query field %s not found", name)
 		hasFilter := false
@@ -149,7 +166,7 @@ func unwrapObject(t graphql.Output) *graphql.Object {
 }
 
 func TestGraphQL_Introspection(t *testing.T) {
-	schema := parseDemoSchema(t)
+	schema := parseTestSchema(t)
 	gqlSchema, err := fookiegql.BuildSchema(schema, nil, nil)
 	require.NoError(t, err)
 
@@ -166,7 +183,7 @@ func TestGraphQL_Introspection(t *testing.T) {
 }
 
 func TestGraphQL_Introspection_SubscriptionWithRoomBus(t *testing.T) {
-	schema := parseDemoSchema(t)
+	schema := parseTestSchema(t)
 	require.NoError(t, schemamerge.MergeBuiltinRooms(schema))
 	eb := events.NewBus()
 	rb := events.NewRoomBus()
@@ -184,7 +201,7 @@ func TestGraphQL_Introspection_SubscriptionWithRoomBus(t *testing.T) {
 }
 
 func TestGraphQL_RoomSubscription_stream(t *testing.T) {
-	schema := parseDemoSchema(t)
+	schema := parseTestSchema(t)
 	require.NoError(t, schemamerge.MergeBuiltinRooms(schema))
 	eb := events.NewBus()
 	rb := events.NewRoomBus()
@@ -224,7 +241,7 @@ func TestGraphQL_RoomSubscription_stream(t *testing.T) {
 }
 
 func TestGraphQL_EntityEvents_subscription(t *testing.T) {
-	schema := parseDemoSchema(t)
+	schema := parseTestSchema(t)
 	eb := events.NewBus()
 	gqlSchema, err := fookiegql.BuildSchema(schema, eb, nil)
 	require.NoError(t, err)
@@ -234,13 +251,13 @@ func TestGraphQL_EntityEvents_subscription(t *testing.T) {
 
 	go func() {
 		time.Sleep(40 * time.Millisecond)
-		eb.PublishCRUD("created", "WalletTransfer", "id-1", map[string]interface{}{"x": 1})
+		eb.PublishCRUD("created", "Village", "id-1", map[string]interface{}{"x": 1})
 	}()
 
 	ch := graphql.Subscribe(graphql.Params{
 		Context:       ctx,
 		Schema:        gqlSchema,
-		RequestString: `subscription { entity_events(model: "WalletTransfer") { op model id ts } }`,
+		RequestString: `subscription { entity_events(model: "Village") { op model id ts } }`,
 	})
 	var saw bool
 	for res := range ch {

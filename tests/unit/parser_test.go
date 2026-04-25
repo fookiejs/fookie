@@ -3,6 +3,7 @@ package tests
 import (
 	"testing"
 
+	"github.com/fookiejs/fookie/pkg/ast"
 	"github.com/fookiejs/fookie/pkg/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -216,11 +217,60 @@ cron {
 	assert.Empty(t, entry.Body.Statements)
 }
 
-func TestParserDemoSchema_CronAndSeed(t *testing.T) {
-	schema := parseDemoSchema(t)
+func TestParserConfigBlock(t *testing.T) {
+	input := `
+config {
+  query_page_size: number = 50
+  ui_theme: string = "dark"
+  rooms_enabled: boolean = true
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
 
-	require.NotEmpty(t, schema.Seeds, "banking demo should include seed data")
-	assert.NotEmpty(t, schema.Crons, "banking demo uses cron blocks for transfer simulation")
+	require.NoError(t, err)
+	require.Len(t, schema.Configs, 3)
+	assert.Equal(t, "query_page_size", schema.Configs[0].Key)
+	assert.Equal(t, ast.TypeNumber, schema.Configs[0].Type)
+	assert.Equal(t, 50.0, schema.Configs[0].Value)
+	assert.Equal(t, "ui_theme", schema.Configs[1].Key)
+	assert.Equal(t, "dark", schema.Configs[1].Value)
+	assert.Equal(t, true, schema.Configs[2].Value)
+}
+
+func TestParserSchema_CronAndSeed(t *testing.T) {
+	input := `
+external TickWorld {
+  body {}
+  output { ok: boolean }
+}
+
+model WorldEvent {
+  fields { name: string }
+  create { modify {} }
+  read {}
+}
+
+seed {
+  WorldEvent(name) {
+    { name: "started" }
+  }
+}
+
+cron {
+  TickWorld("* * * * * *") {}
+}
+`
+	lexer := parser.NewLexer(input)
+	tokens := lexer.Tokenize()
+	p := parser.NewParser(tokens)
+	schema, err := p.Parse()
+
+	require.NoError(t, err)
+	require.NotEmpty(t, schema.Seeds)
+	assert.NotEmpty(t, schema.Crons)
 }
 
 func TestLexerBraces(t *testing.T) {
