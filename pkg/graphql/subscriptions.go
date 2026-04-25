@@ -10,8 +10,10 @@ import (
 )
 
 func entityEventToMap(e events.Event) map[string]interface{} {
-	var payloadJSON string
-	if e.Payload != nil {
+	// Use pre-computed cached payload JSON (computed at publish time)
+	payloadJSON := e.CachedPayloadJSON
+	if payloadJSON == "" && e.Payload != nil {
+		// Fallback: compute if not cached (shouldn't happen in normal path)
 		b, err := json.Marshal(e.Payload)
 		if err == nil {
 			payloadJSON = string(b)

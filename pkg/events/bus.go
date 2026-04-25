@@ -1,6 +1,7 @@
 package events
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -15,11 +16,13 @@ const (
 )
 
 type Event struct {
-	Op        Op                     `json:"op"`
-	Model     string                 `json:"model"`
-	ID        string                 `json:"id"`
-	Payload   map[string]interface{} `json:"payload"`
-	Timestamp time.Time              `json:"ts"`
+	Op                  Op                     `json:"op"`
+	Model               string                 `json:"model"`
+	ID                  string                 `json:"id"`
+	Payload             map[string]interface{} `json:"payload"`
+	Timestamp           time.Time              `json:"ts"`
+	CachedPayloadJSON   string                 `json:"-"` // Pre-computed for GraphQL subscriptions
+	cachedPayloadLock   sync.Once              `json:"-"`
 }
 
 type Bus struct {
@@ -70,7 +73,14 @@ func (b *Bus) Publish(ev Event) {
 }
 
 func (b *Bus) PublishCRUD(op, model, id string, payload map[string]interface{}) {
-	b.Publish(Event{Op: Op(op), Model: model, ID: id, Payload: payload})
+	ev := Event{Op: Op(op), Model: model, ID: id, Payload: payload}
+	// Pre-compute JSON payload for GraphQL subscriptions
+	if payload != nil {
+		if payloadBytes, err := json.Marshal(payload); err == nil {
+			ev.CachedPayloadJSON = string(payloadBytes)
+		}
+	}
+	b.Publish(ev)
 }
 
 func (b *Bus) Subscribe() (<-chan Event, func()) {
