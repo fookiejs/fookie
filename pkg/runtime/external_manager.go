@@ -12,11 +12,21 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"github.com/fookiejs/fookie/pkg/ast"
 	"github.com/fookiejs/fookie/pkg/events"
 	"github.com/fookiejs/fookie/pkg/telemetry"
 	"github.com/redis/go-redis/v9"
 )
+
+var httpClient = &http.Client{
+	Transport: otelhttp.NewTransport(http.DefaultTransport),
+	Timeout:   30 * time.Second,
+}
 
 type Store interface {
 	Read(ctx context.Context, model string, args map[string]interface{}) ([]map[string]interface{}, error)
@@ -58,9 +68,6 @@ func (em *ExternalManager) Register(name string, handler ExternalHandler) {
 	em.handlers[name] = handler
 }
 
-// RegisterURL registers an external whose handler is served by an HTTP worker
-// (e.g. a Node.js @fookie/worker process). Calls are dispatched via
-// POST {baseURL}/call/{name}.
 func (em *ExternalManager) RegisterURL(name, baseURL string) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
@@ -77,7 +84,6 @@ func (em *ExternalManager) Call(ctx context.Context, name string, input map[stri
 	handler, exists := em.handlers[name]
 	em.mu.RUnlock()
 
-	// HTTP worker dispatch takes priority over Go handler registry.
 	if hasURL {
 		return em.callHTTPWorker(ctx, name, baseURL, input)
 	}
@@ -107,46 +113,68 @@ func (em *ExternalManager) Call(ctx context.Context, name string, input map[stri
 	return result, nil
 }
 
-// callHTTPWorker dispatches a call to an external HTTP worker process.
-//
-// Protocol (both request and response are JSON):
-//
-//	POST {baseURL}/call/{name}
-//	Request body:  {"input": {…}}
-//	Success body:  {"result": {…}}
-//	Error body:    {"error": "…"}
 func (em *ExternalManager) callHTTPWorker(ctx context.Context, name, baseURL string, input map[string]interface{}) (map[string]interface{}, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "fookie.external.call",
+		trace.WithAttributes(
+			attribute.String("external.name", name),
+			attribute.String("http.method", "POST"),
+		),
+	)
+	defer span.End()
+
 	reqBody, err := json.Marshal(map[string]interface{}{"input": input})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("http worker marshal: %w", err)
 	}
 
 	url := strings.TrimRight(baseURL, "/") + "/call/" + name
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("http worker request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Fookie-External", name)
 
-	resp, err := http.DefaultClient.Do(req)
+	propagator := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+	propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("http worker %s: %w", name, err)
 	}
 	defer resp.Body.Close()
+
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
 
 	var payload struct {
 		Result map[string]interface{} `json:"result"`
 		Error  string                 `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("http worker %s decode: %w", name, err)
 	}
 	if payload.Error != "" {
-		return nil, fmt.Errorf("http worker %s: %s", name, payload.Error)
+		err := fmt.Errorf("http worker %s: %s", name, payload.Error)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, payload.Error)
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http worker %s: HTTP %d", name, resp.StatusCode)
+		err := fmt.Errorf("http worker %s: HTTP %d", name, resp.StatusCode)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", resp.StatusCode))
+		return nil, err
 	}
 	return payload.Result, nil
 }
@@ -356,15 +384,10 @@ func NewOutboxProcessorWithRedis(exec *Executor, rdb *redis.Client) *OutboxProce
 	}
 }
 
-// NotifyNewOutboxItem pushes the actual outbox row ID to Redis so workers pick it
-// up instantly. Also kicks the run_after scheduler so it can re-evaluate its next
-// wakeup time in case the new item has a closer scheduled time.
-// Falls back silently if Redis not configured.
 func (op *OutboxProcessor) NotifyNewOutboxItem(id string) {
 	if op.rdb != nil {
 		op.rdb.LPush(context.Background(), "fookie:outbox:pending", id)
 	}
-	// Non-blocking kick: wake the run_after scheduler to re-evaluate.
 	select {
 	case op.runAfterCh <- struct{}{}:
 	default:
@@ -379,8 +402,6 @@ func (op *OutboxProcessor) systemUpdateEntity(ctx context.Context, modelName, id
 	return err
 }
 
-// Start begins processing. If Redis is configured, uses BLPOP (instant).
-// Otherwise falls back to ticker-based polling.
 func (op *OutboxProcessor) Start(interval time.Duration) {
 	if op.rdb != nil {
 		go op.runRedisMode()
@@ -400,16 +421,9 @@ func (op *OutboxProcessor) Start(interval time.Duration) {
 	}()
 }
 
-// runRedisMode uses BLPOP for instant, zero-poll outbox consumption.
-// Three concurrent mechanisms ensure no item is ever missed:
-//  1. BLPOP — instant wake-up when a new item is inserted.
-//  2. Fallback ticker (5s) — safety net for lost Redis signals (e.g. server crash
-//     between INSERT and LPUSH, or Redis restart).
-//  3. run_after scheduler — wakes exactly when the next scheduled item becomes ready.
 func (op *OutboxProcessor) runRedisMode() {
 	ctx := context.Background()
 
-	// 2. Fallback: periodic DB scan regardless of BLPOP signals.
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
@@ -423,10 +437,8 @@ func (op *OutboxProcessor) runRedisMode() {
 		}
 	}()
 
-	// 3. Precision scheduler: wake exactly when the next run_after item is ready.
 	go op.runAfterScheduler(ctx)
 
-	// 1. Main loop: BLPOP.
 	for {
 		select {
 		case <-op.done:
@@ -434,16 +446,12 @@ func (op *OutboxProcessor) runRedisMode() {
 		default:
 		}
 
-		// Block up to 2s (allows checking done without busy-wait).
 		blpopResult := op.rdb.BLPop(ctx, 2*time.Second, "fookie:outbox:pending")
 		if blpopResult.Err() != nil {
-			// Timeout or transient error — loop back to check done.
 			continue
 		}
 
 		op.processPending()
-		// Kick the run_after scheduler: the processed item may have triggered new
-		// run_after inserts, so re-evaluate next wakeup time.
 		select {
 		case op.runAfterCh <- struct{}{}:
 		default:
@@ -451,8 +459,6 @@ func (op *OutboxProcessor) runRedisMode() {
 	}
 }
 
-// runAfterScheduler wakes precisely when the next scheduled (run_after) outbox item
-// becomes ready. It re-evaluates after every processPending or NotifyNewOutboxItem call.
 func (op *OutboxProcessor) runAfterScheduler(ctx context.Context) {
 	nextRunAfter := func() time.Duration {
 		var t time.Time
@@ -475,14 +481,11 @@ func (op *OutboxProcessor) runAfterScheduler(ctx context.Context) {
 	for {
 		d := nextRunAfter()
 		if d == 0 {
-			// No future-scheduled items — idle until kicked or timeout.
 			select {
 			case <-op.done:
 				return
 			case <-op.runAfterCh:
-				// A new item was inserted; re-evaluate.
 			case <-time.After(60 * time.Second):
-				// Periodic re-check in case we missed a kick.
 			}
 			continue
 		}
@@ -491,10 +494,8 @@ func (op *OutboxProcessor) runAfterScheduler(ctx context.Context) {
 		case <-op.done:
 			return
 		case <-op.runAfterCh:
-			// New item inserted — re-evaluate; its run_after may be sooner.
 			continue
 		case <-time.After(d):
-			// Scheduled item is now ready.
 			op.processPending()
 		}
 	}
@@ -504,9 +505,6 @@ func (op *OutboxProcessor) Stop() {
 	close(op.done)
 }
 
-// RetryFailed resets a dead-letter (status='failed') outbox item back to
-// 'pending' with retry_count=0 so it will be processed again on the next poll.
-// Returns an error if the item is not found or is not in 'failed' status.
 func (op *OutboxProcessor) RetryFailed(ctx context.Context, id string) error {
 	res, err := op.db.ExecContext(ctx,
 		`UPDATE outbox
@@ -521,7 +519,6 @@ func (op *OutboxProcessor) RetryFailed(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("dlq retry: item %s not found or not in failed status", id)
 	}
-	// Kick the processor immediately
 	select {
 	case op.runAfterCh <- struct{}{}:
 	default:
@@ -530,8 +527,6 @@ func (op *OutboxProcessor) RetryFailed(ctx context.Context, id string) error {
 	return nil
 }
 
-// PurgeFailedBefore deletes failed outbox items older than the given cutoff.
-// Returns the number of rows deleted.
 func (op *OutboxProcessor) PurgeFailedBefore(ctx context.Context, before time.Time) (int64, error) {
 	res, err := op.db.ExecContext(ctx,
 		`DELETE FROM outbox WHERE status='failed' AND created_at < $1`,
@@ -543,8 +538,6 @@ func (op *OutboxProcessor) PurgeFailedBefore(ctx context.Context, before time.Ti
 	return res.RowsAffected()
 }
 
-// findExternal looks up an External definition from the schema by name.
-// Returns nil if not found (e.g. cron jobs have no External definition).
 func (op *OutboxProcessor) findExternal(name string) *ast.External {
 	for _, ext := range op.exec.schema.Externals {
 		if ext.Name == name {
@@ -554,7 +547,6 @@ func (op *OutboxProcessor) findExternal(name string) *ast.External {
 	return nil
 }
 
-// retryMaxFor returns the configured max retry attempts for an external (default 3).
 func retryMaxFor(ext *ast.External) int {
 	if ext == nil || ext.RetryMax <= 0 {
 		return 3
@@ -562,8 +554,6 @@ func retryMaxFor(ext *ast.External) int {
 	return ext.RetryMax
 }
 
-// retryBackoffDelay computes how long to wait before the next retry attempt.
-// attempt is the retry_count AFTER incrementing (1 = first retry).
 func retryBackoffDelay(ext *ast.External, attempt int) time.Duration {
 	if ext == nil {
 		return exponentialBackoff(attempt, 0)
@@ -586,7 +576,6 @@ func retryBackoffDelay(ext *ast.External, attempt int) time.Duration {
 }
 
 func exponentialBackoff(attempt int, maxDelaySecs int) time.Duration {
-	// 10s * 2^(attempt-1): attempt=1→10s, attempt=2→20s, attempt=3→40s …
 	d := time.Duration(10<<uint(attempt-1)) * time.Second
 	if maxDelaySecs > 0 {
 		max := time.Duration(maxDelaySecs) * time.Second
@@ -604,7 +593,6 @@ func (op *OutboxProcessor) processPending() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Record pending job count metric
 	var pendingCount int64
 	op.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox WHERE status = 'pending'`).Scan(&pendingCount)
 	telemetry.RecordOutboxPending(pendingCount)
@@ -647,9 +635,24 @@ func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
 	var params map[string]interface{}
 	json.Unmarshal(job.payload, &params)
 
-	dispatchCtx := ctx
+	spanOpts := []trace.SpanStartOption{
+		trace.WithAttributes(
+			attribute.String("fookie.outbox_id", job.id),
+			attribute.String("fookie.external_name", job.externalName),
+			attribute.String("fookie.entity_type", job.entityType),
+		),
+	}
+	if job.rootRequestID.Valid && job.rootRequestID.String != "" {
+		spanOpts = append(spanOpts, trace.WithAttributes(
+			attribute.String("fookie.root_request_id", job.rootRequestID.String),
+		))
+	}
+	dispatchCtx, span := telemetry.Tracer().Start(ctx, "fookie.outbox.process", spanOpts...)
+	defer span.End()
+
+	dispatchCtx2 := dispatchCtx
 	if job.entityType != "cron" && job.rootRequestID.Valid && job.rootRequestID.String != "" {
-		dispatchCtx = withRootRequest(ctx, job.rootRequestID.String, 0)
+		dispatchCtx2 = withRootRequest(dispatchCtx, job.rootRequestID.String, 0)
 	}
 
 	var result map[string]interface{}
@@ -659,11 +662,18 @@ func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
 		if entry == nil {
 			callErr = fmt.Errorf("cron entry %q not found in schema", job.externalName)
 		} else {
-			callErr = op.exec.ExecuteCronBody(dispatchCtx, entry)
+			callErr = op.exec.ExecuteCronBody(dispatchCtx2, entry)
 			result = map[string]interface{}{}
 		}
 	} else {
-		result, callErr = op.manager.Call(dispatchCtx, job.externalName, params)
+		result, callErr = op.manager.Call(dispatchCtx2, job.externalName, params)
+	}
+
+	if callErr != nil {
+		span.RecordError(callErr)
+		span.SetStatus(codes.Error, callErr.Error())
+	} else {
+		span.SetStatus(codes.Ok, "outbox job processed successfully")
 	}
 
 	if callErr == nil {
@@ -720,7 +730,6 @@ func (op *OutboxProcessor) processForwardStep(ctx context.Context) {
 				}
 			}
 		} else {
-			// Compute backoff delay for next attempt.
 			delay := retryBackoffDelay(ext, newRetryCount)
 			if delay > 0 {
 				nextRun := time.Now().Add(delay)
@@ -764,7 +773,23 @@ func (op *OutboxProcessor) processCompensationStep(ctx context.Context) {
 	var params map[string]interface{}
 	json.Unmarshal(job.payload, &params)
 
-	_, callErr := op.manager.Call(ctx, job.externalName, params)
+	compCtx, compSpan := telemetry.Tracer().Start(ctx, "fookie.outbox.compensate",
+		trace.WithAttributes(
+			attribute.String("fookie.outbox_id", job.id),
+			attribute.String("fookie.external_name", job.externalName),
+			attribute.String("fookie.saga_id", job.sagaID.String),
+		),
+	)
+	defer compSpan.End()
+
+	_, callErr := op.manager.Call(compCtx, job.externalName, params)
+
+	if callErr != nil {
+		compSpan.RecordError(callErr)
+		compSpan.SetStatus(codes.Error, callErr.Error())
+	} else {
+		compSpan.SetStatus(codes.Ok, "compensation processed successfully")
+	}
 
 	if callErr == nil {
 		tx.ExecContext(ctx, `UPDATE outbox SET status='compensated', processed_at=NOW() WHERE id=$1`, job.id)

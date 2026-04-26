@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"github.com/fookiejs/fookie/pkg/runtime"
 	"github.com/graphql-go/graphql"
 )
@@ -54,7 +56,14 @@ func NewHandler(executor *runtime.Executor, schema graphql.Schema, idem *runtime
 			return
 		}
 
-		ctx := WithExecutor(r.Context(), executor)
+		ctx := r.Context()
+		propagator := propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		)
+		ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+		ctx = WithExecutor(ctx, executor)
+
 		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 			token := strings.TrimPrefix(auth, "Bearer ")
 			ctx = WithToken(ctx, token)
@@ -106,6 +115,9 @@ func NewHandler(executor *runtime.Executor, schema graphql.Schema, idem *runtime
 			_ = idem.Commit(ctx, idemKey, result)
 
 			w.Header().Set("Content-Type", "application/json")
+			if sc := trace.SpanContextFromContext(ctx); sc.IsValid() && sc.HasTraceID() {
+				w.Header().Set("X-Trace-ID", sc.TraceID().String())
+			}
 			_ = json.NewEncoder(w).Encode(result)
 			return
 		}
@@ -119,6 +131,9 @@ func NewHandler(executor *runtime.Executor, schema graphql.Schema, idem *runtime
 		})
 
 		w.Header().Set("Content-Type", "application/json")
+		if sc := trace.SpanContextFromContext(ctx); sc.IsValid() && sc.HasTraceID() {
+			w.Header().Set("X-Trace-ID", sc.TraceID().String())
+		}
 		_ = json.NewEncoder(w).Encode(result)
 	})
 }

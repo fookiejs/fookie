@@ -53,7 +53,6 @@ func NewExecutor(db *sql.DB, schema *ast.Schema, logger Logger) *Executor {
 	}
 	extMgr.store = &StoreAdapter{e: e}
 
-	// Auto-register HTTP worker URLs declared in the schema.
 	for _, ext := range schema.Externals {
 		if ext.URL != "" {
 			extMgr.RegisterURL(ext.Name, ext.URL)
@@ -238,10 +237,21 @@ func (e *Executor) Create(ctx context.Context, modelName string, req map[string]
 	rc, ctx := e.rootRC(ctx, req, "create", modelName)
 	pay := rc.payload()
 
-	tx, err := e.db.BeginTx(ctx, nil)
+	txBeginCtx, txBeginSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_begin",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "create"),
+		),
+	)
+	tx, err := e.db.BeginTx(txBeginCtx, nil)
 	if err != nil {
+		txBeginSpan.RecordError(err)
+		txBeginSpan.SetStatus(codes.Error, err.Error())
+		txBeginSpan.End()
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
+	txBeginSpan.End()
 	defer tx.Rollback()
 
 	ctx = withTx(ctx, tx)
@@ -409,9 +419,19 @@ func (e *Executor) Create(ctx context.Context, modelName string, req map[string]
 		rc.output["status"] = "done"
 	}
 
+	_, txCommitSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_commit",
+		trace.WithAttributes(
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "create"),
+		),
+	)
 	if err := tx.Commit(); err != nil {
+		txCommitSpan.RecordError(err)
+		txCommitSpan.SetStatus(codes.Error, err.Error())
+		txCommitSpan.End()
 		return nil, fmt.Errorf("commit: %w", err)
 	}
+	txCommitSpan.End()
 
 	maskRestrictedFields(rc.output, model)
 
@@ -504,7 +524,6 @@ func (e *Executor) Read(ctx context.Context, modelName string, req map[string]in
 	return result, nil
 }
 
-// ConnectionResult is the return value of ReadConnection.
 type ConnectionResult struct {
 	Edges      []EdgeResult
 	PageInfo   PageInfoResult
@@ -524,9 +543,6 @@ type PageInfoResult struct {
 	TotalCount  int
 }
 
-// ReadConnection performs keyset-cursor-based pagination on a model.
-// req["cursor"]["first"] (int) sets the page size (default 20, max 200).
-// req["cursor"]["after"] (string) is a base64-encoded opaque cursor.
 func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map[string]interface{}) (*ConnectionResult, error) {
 	op, model, err := e.resolveOp(modelName, "read")
 	if err != nil {
@@ -556,7 +572,6 @@ func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map
 		}
 	}
 
-	// Build WHERE clause from filter
 	frag := ""
 	filterArgs := []interface{}{}
 	argN := 1
@@ -568,7 +583,6 @@ func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map
 		}
 	}
 
-	// Total count (ignoring cursor)
 	table := compiler.SnakeCase(model.Name)
 	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %q WHERE "deleted_at" IS NULL`, table)
 	if frag != "" {
@@ -577,7 +591,6 @@ func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map
 	var total int
 	e.execer(ctx).QueryRowContext(ctx, countSQL, filterArgs...).Scan(&total)
 
-	// Keyset condition
 	queryArgs := append([]interface{}{}, filterArgs...)
 	keyset := ""
 	if afterCursor != nil {
@@ -585,7 +598,6 @@ func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map
 		queryArgs = append(queryArgs, afterCursor.CreatedAt, afterCursor.ID)
 	}
 
-	// Fetch first+1 rows to determine hasNextPage
 	q := fmt.Sprintf(`SELECT * FROM %q WHERE "deleted_at" IS NULL`, table)
 	if frag != "" {
 		q += " AND (" + frag + ")"
@@ -634,7 +646,6 @@ func (e *Executor) ReadConnection(ctx context.Context, modelName string, req map
 	return &ConnectionResult{Edges: edges, PageInfo: pi, TotalCount: total}, nil
 }
 
-// cursorKey encodes the keyset position: (created_at, id).
 type cursorKey struct {
 	CreatedAt time.Time `json:"ca"`
 	ID        string    `json:"id"`
@@ -854,10 +865,21 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, req 
 	rc, ctx := e.rootRC(ctx, req, "update", modelName)
 	rc.output["id"] = id
 
-	tx, err := e.db.BeginTx(ctx, nil)
+	txBeginCtx, txBeginSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_begin",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "update"),
+		),
+	)
+	tx, err := e.db.BeginTx(txBeginCtx, nil)
 	if err != nil {
+		txBeginSpan.RecordError(err)
+		txBeginSpan.SetStatus(codes.Error, err.Error())
+		txBeginSpan.End()
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
+	txBeginSpan.End()
 	defer tx.Rollback()
 	ctx = withTx(ctx, tx)
 
@@ -919,9 +941,19 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, req 
 	}
 
 	if len(patch) == 0 {
+		_, txCommitSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_commit",
+			trace.WithAttributes(
+				attribute.String("fookie.model", modelName),
+				attribute.String("fookie.operation", "update"),
+			),
+		)
 		if err := tx.Commit(); err != nil {
+			txCommitSpan.RecordError(err)
+			txCommitSpan.SetStatus(codes.Error, err.Error())
+			txCommitSpan.End()
 			return nil, fmt.Errorf("commit: %w", err)
 		}
+		txCommitSpan.End()
 		maskRestrictedFields(rc.output, model)
 		return rc.output, nil
 	}
@@ -971,9 +1003,19 @@ func (e *Executor) Update(ctx context.Context, modelName string, id string, req 
 		}
 	}
 
+	_, txCommitSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_commit",
+		trace.WithAttributes(
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "update"),
+		),
+	)
 	if err := tx.Commit(); err != nil {
+		txCommitSpan.RecordError(err)
+		txCommitSpan.SetStatus(codes.Error, err.Error())
+		txCommitSpan.End()
 		return nil, fmt.Errorf("commit: %w", err)
 	}
+	txCommitSpan.End()
 
 	maskRestrictedFields(rc.output, model)
 
@@ -1008,10 +1050,21 @@ func (e *Executor) Delete(ctx context.Context, modelName string, id string, req 
 
 	rc, ctx := e.rootRC(ctx, req, "delete", modelName)
 
-	tx, err := e.db.BeginTx(ctx, nil)
+	txBeginCtx, txBeginSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_begin",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "delete"),
+		),
+	)
+	tx, err := e.db.BeginTx(txBeginCtx, nil)
 	if err != nil {
+		txBeginSpan.RecordError(err)
+		txBeginSpan.SetStatus(codes.Error, err.Error())
+		txBeginSpan.End()
 		return fmt.Errorf("begin tx: %w", err)
 	}
+	txBeginSpan.End()
 	defer tx.Rollback()
 	ctx = withTx(ctx, tx)
 
@@ -1055,23 +1108,30 @@ func (e *Executor) Delete(ctx context.Context, modelName string, id string, req 
 		}
 	}
 
+	_, txCommitSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_commit",
+		trace.WithAttributes(
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "delete"),
+		),
+	)
 	if err := tx.Commit(); err != nil {
+		txCommitSpan.RecordError(err)
+		txCommitSpan.SetStatus(codes.Error, err.Error())
+		txCommitSpan.End()
 		return fmt.Errorf("commit: %w", err)
 	}
+	txCommitSpan.End()
 
 	e.emit("deleted", modelName, id, map[string]interface{}{"id": id})
 	return nil
 }
 
-// Restore un-deletes a soft-deleted record by clearing deleted_at.
-// It reuses the delete operation's role/rule checks so the same permissions apply.
 func (e *Executor) Restore(ctx context.Context, modelName string, id string, req map[string]interface{}) (err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.restore "+modelName)
 	defer span.End()
 
 	op, model, err := e.resolveOp(modelName, "delete")
 	if err != nil {
-		// Fallback: try update op if no delete op defined
 		_, model, err = e.resolveOp(modelName, "update")
 		if err != nil {
 			return fmt.Errorf("restore: no delete or update op on model %s", modelName)
@@ -1081,10 +1141,21 @@ func (e *Executor) Restore(ctx context.Context, modelName string, id string, req
 
 	rc, ctx := e.rootRC(ctx, req, "restore", modelName)
 
-	tx, err := e.db.BeginTx(ctx, nil)
+	txBeginCtx, txBeginSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_begin",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "restore"),
+		),
+	)
+	tx, err := e.db.BeginTx(txBeginCtx, nil)
 	if err != nil {
+		txBeginSpan.RecordError(err)
+		txBeginSpan.SetStatus(codes.Error, err.Error())
+		txBeginSpan.End()
 		return fmt.Errorf("begin tx: %w", err)
 	}
+	txBeginSpan.End()
 	defer tx.Rollback()
 	ctx = withTx(ctx, tx)
 
@@ -1105,9 +1176,19 @@ func (e *Executor) Restore(ctx context.Context, modelName string, id string, req
 		return fmt.Errorf("restore: %w", err)
 	}
 
+	_, txCommitSpan := telemetry.Tracer().Start(ctx, "fookie.db.tx_commit",
+		trace.WithAttributes(
+			attribute.String("fookie.model", modelName),
+			attribute.String("fookie.operation", "restore"),
+		),
+	)
 	if err := tx.Commit(); err != nil {
+		txCommitSpan.RecordError(err)
+		txCommitSpan.SetStatus(codes.Error, err.Error())
+		txCommitSpan.End()
 		return fmt.Errorf("commit: %w", err)
 	}
+	txCommitSpan.End()
 
 	e.emit("restored", modelName, id, map[string]interface{}{"id": id})
 	return nil
@@ -1931,7 +2012,6 @@ func maskRestrictedFields(row map[string]interface{}, model *ast.Model) {
 	}
 }
 
-// Sum returns the sum of a field across records matching the filter
 func (e *Executor) Sum(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.sum "+modelName)
 	defer span.End()
@@ -1999,7 +2079,6 @@ func (e *Executor) Sum(ctx context.Context, modelName, field string, req map[str
 	return result, nil
 }
 
-// Count returns the count of records matching the filter
 func (e *Executor) Count(ctx context.Context, modelName string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.count "+modelName)
 	defer span.End()
@@ -2064,7 +2143,6 @@ func (e *Executor) Count(ctx context.Context, modelName string, req map[string]i
 	return result, nil
 }
 
-// Avg returns the average of a field across records matching the filter
 func (e *Executor) Avg(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.avg "+modelName)
 	defer span.End()
@@ -2132,7 +2210,6 @@ func (e *Executor) Avg(ctx context.Context, modelName, field string, req map[str
 	return result, nil
 }
 
-// Min returns the minimum value of a field across records matching the filter
 func (e *Executor) Min(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.min "+modelName)
 	defer span.End()
@@ -2200,7 +2277,6 @@ func (e *Executor) Min(ctx context.Context, modelName, field string, req map[str
 	return result, nil
 }
 
-// Max returns the maximum value of a field across records matching the filter
 func (e *Executor) Max(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.max "+modelName)
 	defer span.End()
@@ -2268,7 +2344,6 @@ func (e *Executor) Max(ctx context.Context, modelName, field string, req map[str
 	return result, nil
 }
 
-// Stddev returns the standard deviation of a field across records matching the filter
 func (e *Executor) Stddev(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.stddev "+modelName)
 	defer span.End()
@@ -2336,7 +2411,6 @@ func (e *Executor) Stddev(ctx context.Context, modelName, field string, req map[
 	return result, nil
 }
 
-// Variance returns the variance of a field across records matching the filter
 func (e *Executor) Variance(ctx context.Context, modelName, field string, req map[string]interface{}) (result float64, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "fookie.variance "+modelName)
 	defer span.End()
