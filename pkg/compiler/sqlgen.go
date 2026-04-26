@@ -396,7 +396,7 @@ func SnakeCase(s string) string {
 func snake(s string) string { return SnakeCase(s) }
 
 // modelIndexDDLs emits CREATE [UNIQUE] INDEX IF NOT EXISTS statements for
-// every @@index / @@unique directive declared in the model.
+// every field-level --index / --unique constraint or model-level @@index / @@unique directive.
 func (sg *SQLGenerator) modelIndexDDLs(m *ast.Model) []string {
 	table := snake(m.Name)
 	var out []string

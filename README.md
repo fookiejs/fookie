@@ -58,11 +58,9 @@ fookie serve --schema schema.fql --db "$DB_URL" --port :8080
 model User {
   fields {
     name  string
-    email string
+    email string --unique
     role  string
   }
-
-  @@unique([email], where: "deleted_at IS NULL")
 
   create {}
   read   {}

@@ -70,11 +70,9 @@ model Post {
   fields {
     title      string
     body       string
-    author     id     --index
-    created_at timestamp
+    author     id
+    created_at timestamp --index desc
   }
-
-  @@index([author, created_at DESC])
 
   create {}
   read   {}
