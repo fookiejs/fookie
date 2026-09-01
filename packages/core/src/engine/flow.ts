@@ -10,7 +10,7 @@ import {
   storeForModel,
   withWriteTransaction,
 } from "./runtime.ts";
-import type { EmissionCursor, Runtime } from "./runtime.ts";
+import type { EmissionCursor, RoomBox, Runtime } from "./runtime.ts";
 import {
   DatabaseError,
   ModelFieldError,
@@ -424,6 +424,7 @@ export type FlowRun<D extends ModelFieldsInput = ModelFieldsInput> = {
   signal: Signal;
   starts: number;
   emissions: EmissionCursor;
+  rooms: RoomBox;
 };
 
 function relatesToParent(fieldValue: FieldValue, parentName: string): boolean {

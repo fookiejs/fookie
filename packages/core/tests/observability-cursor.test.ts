@@ -5,6 +5,7 @@ import { Done, Model, app } from "../src/index.ts";
 import type { OperationEvent } from "../src/index.ts";
 import { MockDb, LiveApps } from "./mock-db.ts";
 import { Postgres } from "./engines.ts";
+import { httpPost } from "./http-client.ts";
 
 const child = Model({
   name: "CursorChild",
@@ -169,6 +170,22 @@ describe("observability cursor, parents and rooms", () => {
 
     const created = await fookie.create(parent, { email: "boom@x.com" });
     assert.equal(created.signal, "done", "a broken subscriber must not fail the run");
+    await apps.shutdown();
+  });
+
+  it("polls observability deltas over http", async () => {
+    const fookie = boot();
+    fookie.run();
+    const portHits = await fookie.listening();
+    assert.equal(portHits.length > 0, true);
+    const port = portHits[0];
+    await fookie.create(parent, { email: "http-obs@x.com" });
+    const first = fookie.observability(0);
+    const polled = await httpPost(port, "/realtime/observability", { since: 0 });
+    assert.equal(polled.status, 200);
+    assert.equal(Array.isArray(polled.json.logs), true);
+    assert.equal(typeof polled.json.nextSeq === "number", true);
+    assert.ok(Number(polled.json.nextSeq) >= first.nextSeq);
     await apps.shutdown();
   });
 });

@@ -6,6 +6,7 @@ export type OperationEvent = {
   id: string;
   runId: string;
   signal: Signal;
+  rooms: readonly string[];
 };
 
 export type OperationListener = (event: OperationEvent) => void;

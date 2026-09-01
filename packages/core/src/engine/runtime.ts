@@ -53,6 +53,10 @@ export type EmissionCursor = {
   published: number;
 };
 
+export type RoomBox = {
+  names: readonly string[];
+};
+
 export type RuntimeParent = {
   model: string;
   entityId: string;
@@ -82,6 +86,7 @@ export type Runtime<E extends readonly ExternalDef[] = readonly ExternalDef[]> =
   pendingEntityWrites: PendingWriteQueue;
   nestedSteps: NestedStepCursor;
   emissions: EmissionCursor;
+  rooms: RoomBox;
 };
 
 export function cacheEntity(
@@ -217,6 +222,7 @@ async function attemptWrite(
     pendingExternalEvents: { events: [] },
     nestedSteps: rt.nestedSteps,
     emissions: rt.emissions,
+    rooms: rt.rooms,
   };
   let committed = false;
   let signal: Signal = Failed;
@@ -398,6 +404,7 @@ export function runtimeOf(
     pendingEntityWrites: rt.pendingEntityWrites,
     nestedSteps: rt.nestedSteps,
     emissions: rt.emissions,
+    rooms: rt.rooms,
   };
 }
 

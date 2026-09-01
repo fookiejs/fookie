@@ -36,6 +36,7 @@ import type {
   EmissionCursor,
   PendingEventQueue,
   PendingWriteQueue,
+  RoomBox,
   Runtime,
 } from "./engine/runtime.ts";
 import {
@@ -411,6 +412,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     this.runs.set(runId, run);
     const createRt = this.runtimeFor(runId, model, entityId, "create");
@@ -423,6 +425,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
         id: entityId,
         runId,
         signal,
+        rooms: createRt.rooms.names,
       });
       if (signal === Done) {
         for (const created of run.created) {
@@ -479,6 +482,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     this.runs.set(runId, run);
     const rt = this.runtimeFor(runId, model, runId, "list", pinned);
@@ -502,6 +506,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
       id: entityId,
       runId,
       signal,
+      rooms: run.rooms.names,
     });
     return mutationResult(signal, entityId, runId);
   }
@@ -522,6 +527,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
           id: entityId,
           runId,
           signal,
+          rooms: run.rooms.names,
         });
       }
     }
@@ -548,6 +554,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     this.runs.set(runId, run);
     const mutationRt = this.runtimeFor(runId, model, runId, "update");
@@ -573,6 +580,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     this.runs.set(runId, run);
     const mutationRt = this.runtimeFor(runId, model, input.id, "delete");
@@ -603,8 +611,17 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
         if (run.signal !== Running && run.signal !== Done && run.signal !== Failed) {
           throw ValidationError.create("resume signal invalid");
         }
+        const resumeRt = this.runtimeFor(runId, run.model, run.entityId, run.operation);
         this.finalizeRun(runId, run, signal);
         await this.saveRunPhase(runId, run, signal);
+        this.publishSettled({
+          model: run.model.name,
+          operation: run.operation,
+          id: run.entityId,
+          runId,
+          signal,
+          rooms: resumeRt.rooms.names,
+        });
         return signal;
       },
     );
@@ -660,6 +677,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
         signal: Running,
         starts: 1,
         emissions: { seen: 0, published: 0 },
+        rooms: { names: [] },
       });
       return true;
     }
@@ -1435,8 +1453,10 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
     pinned: readonly EntityStore[] = [],
   ): Runtime<E> {
     let emissions: EmissionCursor = { seen: 0, published: 0 };
+    let rooms: RoomBox = { names: [] };
     for (const run of mapLookup(this.runs, traceId)) {
       emissions = run.emissions;
+      rooms = run.rooms;
     }
     return {
       traceId,
@@ -1444,6 +1464,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
       entityId,
       operation,
       parent: [],
+      rooms,
       obs: this.obs,
       outbox: this.outbox,
       onExternalEvent: this.onExternalEvent,
@@ -1629,6 +1650,7 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
         signal: Running,
         starts: 1,
         emissions: { seen: 0, published: 0 },
+        rooms: { names: [] },
       });
       restored += 1;
     }
@@ -1639,6 +1661,25 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
     return restored;
   }
 
+  private async settleHttpRun(
+    runId: string,
+    run: FlowRun<ModelFieldsInput>,
+    signal: Signal,
+    entityId: string,
+    rooms: readonly string[],
+  ): Promise<void> {
+    this.finalizeRun(runId, run, signal);
+    await this.saveRunPhase(runId, run, signal);
+    this.publishSettled({
+      model: run.model.name,
+      operation: run.operation,
+      id: entityId,
+      runId,
+      signal,
+      rooms,
+    });
+  }
+
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     return await routeHttp(
       {
@@ -1646,7 +1687,9 @@ export class App<E extends readonly ExternalDef[] = readonly ExternalDef[]> {
         runs: this.runs,
         runtimeFor: (traceId, model, entityId, operation) =>
           this.runtimeFor(traceId, model, entityId, operation),
-        finalizeRun: (runId, run, signal) => this.finalizeRun(runId, run, signal),
+        observability: (since) => this.observability(since),
+        settleHttpRun: (runId, run, signal, entityId, rooms) =>
+          this.settleHttpRun(runId, run, signal, entityId, rooms),
       },
       req,
       res,

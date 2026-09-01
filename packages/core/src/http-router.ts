@@ -23,6 +23,7 @@ import { catchValidation, firstPresent } from "./slot.ts";
 import { uuidSchema } from "./types/pg-literals.ts";
 import { Done, Failed, Running } from "./signal.ts";
 import type { Signal } from "./signal.ts";
+import type { ObservabilityPage } from "./observability.ts";
 
 export type RegisteredModel = ModelDef<ModelFieldsInput>;
 
@@ -35,7 +36,14 @@ export type RouterPorts = {
     entityId: string,
     operation: string,
   ): Runtime;
-  finalizeRun(runId: string, run: FlowRun<ModelFieldsInput>, signal: Signal): void;
+  observability: (since: number) => ObservabilityPage;
+  settleHttpRun: (
+    runId: string,
+    run: FlowRun<ModelFieldsInput>,
+    signal: Signal,
+    entityId: string,
+    rooms: readonly string[],
+  ) => Promise<void>;
 };
 
 export async function routeHttp(
@@ -60,6 +68,22 @@ export async function routeHttp(
   }
   const url = new URL(requestUrlParsed.data, "http://local");
   const parts = pathPartsFrom(url.pathname);
+  const routeHeadHits = pathPartAt(parts, 0);
+  const routeNextHits = pathPartAt(parts, 1);
+  if (routeHeadHits[0] === "realtime" && routeNextHits[0] === "observability") {
+    if (parts.length !== 2) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    const sinceParsed = z.number().int().nonnegative().safeParse(payload.since);
+    if (sinceParsed.success === false) {
+      sendJson(res, 400, { error: "invalid since cursor" });
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(ports.observability(sinceParsed.data)));
+    return;
+  }
   if (parts.length < 2) {
     sendJson(res, 404, { error: "not found" });
     return;
@@ -111,10 +135,12 @@ export async function routeHttp(
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     ports.runs.set(runId, run);
-    const signal = await executeRun(ports.runtimeFor(runId, model, entityId, "create"), run);
-    ports.finalizeRun(runId, run, signal);
+    const rt = ports.runtimeFor(runId, model, entityId, "create");
+    const signal = await executeRun(rt, run);
+    await ports.settleHttpRun(runId, run, signal, entityId, rt.rooms.names);
     if (signal === Done) {
       for (const created of run.created) {
         sendJson(res, 200, { signal: Done, id: entityId, runId, entity: created });
@@ -154,10 +180,12 @@ export async function routeHttp(
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     ports.runs.set(runId, run);
-    const signal = await executeRun(ports.runtimeFor(runId, model, runId, "list"), run);
-    ports.finalizeRun(runId, run, signal);
+    const listRt = ports.runtimeFor(runId, model, runId, "list");
+    const signal = await executeRun(listRt, run);
+    await ports.settleHttpRun(runId, run, signal, runId, listRt.rooms.names);
     sendJson(res, 200, { signal, runId, results: run.results });
     return;
   }
@@ -199,10 +227,12 @@ export async function routeHttp(
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     ports.runs.set(runId, run);
-    const signal = await executeRun(ports.runtimeFor(runId, model, runId, "update"), run);
-    ports.finalizeRun(runId, run, signal);
+    const updateRt = ports.runtimeFor(runId, model, runId, "update");
+    const signal = await executeRun(updateRt, run);
+    await ports.settleHttpRun(runId, run, signal, runId, updateRt.rooms.names);
     sendJson(res, 200, updateResult(signal, entityIdsOf(run.entity), runId));
     return;
   }
@@ -248,10 +278,12 @@ export async function routeHttp(
       signal: Running,
       starts: 0,
       emissions: { seen: 0, published: 0 },
+      rooms: { names: [] },
     };
     ports.runs.set(runId, run);
-    const signal = await executeRun(ports.runtimeFor(runId, model, entityId, "delete"), run);
-    ports.finalizeRun(runId, run, signal);
+    const deleteRt = ports.runtimeFor(runId, model, entityId, "delete");
+    const signal = await executeRun(deleteRt, run);
+    await ports.settleHttpRun(runId, run, signal, entityId, deleteRt.rooms.names);
     sendJson(res, 200, mutationResult(signal, entityId, runId));
   }
 }
